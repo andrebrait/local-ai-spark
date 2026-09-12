@@ -1,0 +1,8 @@
+# Immutable arm64 vLLM 8a728663 base; override only with reviewed matching sources.
+ARG BASE_IMAGE=vllm/vllm-openai@sha256:a551e05307cd2e0092139d84db32af9c97e67d2eeeff072d21e429131d8c23f0
+FROM ${BASE_IMAGE}
+COPY src/patch_prefix_cache.py /tmp/patch_prefix_cache.py
+RUN python3 /tmp/patch_prefix_cache.py /usr/local/lib/python3.12/dist-packages \
+    && rm /tmp/patch_prefix_cache.py
+LABEL local-ai.managed="true" \
+      local-ai.model="nvidia/Qwen3.8-Flash-Next-NVFP4"

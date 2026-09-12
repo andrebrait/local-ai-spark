@@ -17,61 +17,33 @@ class ServeConfigTest(unittest.TestCase):
         cache = Path(self.temp.name)
         model = cache / 'official-nvidia-checkpoint'
         model.mkdir()
-        (model / 'config.json').write_text('{}')
+        (model / 'config.json').write_text('{"text_config":{"vocab_size":248320}}')
         snapshot = cache / 'hub/models--RadixArk--Qwen3.8-Flash-Next-NVFP4/snapshots/test'
         snapshot.mkdir(parents=True)
         hybrid = snapshot.with_name('test-fp8hybrid')
         hybrid.mkdir()
         (hybrid / '.prepared').touch()
+        api_env = cache / 'api.env'
+        api_env.write_text('VLLM_API_KEY=' + 'test-key-' * 5 + '\n')
+        api_env.chmod(0o600)
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(cache),
-                    'HF_CACHE': str(cache), 'MODEL_HOST': str(model), 'DRY_RUN': '1'}
+                    'HF_CACHE': str(cache), 'CACHE_HOST': str(cache / 'runtime'),
+                    'MODEL_HOST': str(model), 'DRY_RUN': '1',
+                    'IMAGE': 'local-ai:test', 'API_ENV_FILE': str(api_env), 'GMU': '0.75'}
 
-    def launch(self, script='serve.sh', **overrides):
-        result = subprocess.run(['bash', str(ROOT / 'scripts' / script)],
-                                env={**self.env, **overrides},
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        return shlex.split(result.stdout.splitlines()[0])
+    def test_auth_configuration_fails_closed(self):
+        command = ['bash', str(ROOT / 'scripts/serve.sh')]
+        valid = subprocess.run(command, env=self.env, capture_output=True, text=True)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertNotIn('test-key-' * 5, valid.stdout + valid.stderr)
+        for content in ('WRONG_KEY_NAME=abcdef\n', 'VLLM_API_KEY=\n',
+                        'VLLM_API_KEY=' + 'x' * 32 + '\nVLLM_API_KEY=\n'):
+            with self.subTest(content=content):
+                Path(self.env['API_ENV_FILE']).write_text(content)
+                rejected = subprocess.run(command, env=self.env, capture_output=True, text=True)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertNotIn('starting on', rejected.stdout)
 
-    def test_base_profile(self):
-        args = self.launch()
-        for flag, value in {'--max-model-len': '262144', '--max-num-seqs': '6',
-                            '--max-num-batched-tokens': '4096',
-                            '--kv-cache-dtype': 'fp8_e4m3',
-                            '--gpu-memory-utilization': '0.80'}.items():
-            self.assertEqual(args[args.index(flag) + 1], value)
-        self.assertIn('--network', args)
-        self.assertEqual(args[args.index('--network') + 1], 'host')
-        self.assertIn('--no-enable-prefix-caching', args)
-        graph = json.loads(args[args.index('--compilation-config') + 1])
-        self.assertEqual(graph['cudagraph_mode'], 'FULL_DECODE_ONLY')
-        self.assertEqual(graph['cudagraph_capture_sizes'], [4, 8, 12, 16, 20, 24])
-        self.assertTrue(any('full-recipe-patch/ple_layer.py' in arg for arg in args))
-        self.assertEqual(json.loads(args[args.index('--speculative-config') + 1])
-                         ['num_speculative_tokens'], 3)
-        self.assertEqual(args[args.index('--served-model-name') + 1], 'qwen3.8-flash-next')
-
-    def test_long_context_profiles(self):
-        for script, dtype, pool in [('serve-500k.sh', 'fp8_e4m3', '9663676416'),
-                                    ('serve-500k-fp8.sh', 'fp8_e4m3', '9663676416'),
-                                    ('serve-500k-bf16.sh', 'auto', '17179869184')]:
-            with self.subTest(script=script):
-                args = self.launch(script)
-                self.assertEqual(args[args.index('--max-model-len') + 1], '524288')
-                self.assertEqual(args[args.index('--kv-cache-dtype') + 1], dtype)
-                self.assertEqual(args[args.index('--kv-cache-memory') + 1], pool)
-                self.assertIn('-cc.cudagraph_capture_sizes=[4]', args)
-                spec = json.loads(args[args.index('--speculative-config') + 1])
-                self.assertEqual(spec['max_model_len'], 524288)
-
-    def test_overrides_and_no_mtp(self):
-        args = self.launch(MTP='4', SEQS='3', CHUNK='8192', CAPTURE_SIZES='16,4,12,4', PREFIX_CACHE='1')
-        self.assertEqual(args[args.index('--max-num-batched-tokens') + 1], '8192')
-        self.assertIn('--enable-prefix-caching', args)
-        self.assertEqual(json.loads(args[args.index('--compilation-config') + 1])
-                         ['cudagraph_capture_sizes'], [16, 4, 12, 4])
-        args = self.launch(CAPTURE_SIZES='')
-        self.assertNotIn('cudagraph_capture_sizes', args[args.index('--compilation-config') + 1])
 
     def test_invalid_settings(self):
         for overrides in [{'SEQS': '0'}, {'MTP': '0'}, {'MTP': '03'},

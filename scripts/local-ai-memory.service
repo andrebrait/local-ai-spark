@@ -1,0 +1,17 @@
+[Unit]
+Description=Local AI unified-memory safety stop
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/andre/local-ai/source/scripts/watch-memory.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

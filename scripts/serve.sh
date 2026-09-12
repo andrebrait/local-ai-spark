@@ -5,19 +5,20 @@
 #   scripts/serve.sh
 #   docker logs -f qwen38-flash
 #
-# Defaults reproduce the validated TP1 recipe: 262k context, 6 sequences,
-# MTP3, FP8 KV, BF16 recurrent state, a 4096-token prefill chunk,
-# MiaAI's code-tuned draft vocabulary, and prefix caching disabled.
+# Defaults serve the native context with FP8 KV, MTP3, and corrected prefix reuse.
+# The local image must include src/patch_prefix_cache.py before enabling reuse.
 # Override MODEL_HOST only when the official checkpoint lives elsewhere.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="${NAME:-qwen38-flash}"
-IMAGE="${IMAGE:-vllm/vllm-openai:nightly-8a728663c1c3eeace834a95f5654fa653cc1998c}"
-MODEL_HOST="${MODEL_HOST:-/var/tmp/models/Qwen3.8-Flash-Next-NVFP4-nvidia}"
+IMAGE="${IMAGE:?Set IMAGE to the pinned local-ai image}"
+MODEL_HOST="${MODEL_HOST:-/home/andre/local-ai/models/Qwen3.8-Flash-Next-NVFP4}"
 PATCH_DIR="${PATCH_DIR:-$ROOT/src/full-recipe-patch}"
-CACHE_HOST="${CACHE_HOST:-/var/tmp/qwen38fn-vllm-cache}"
-PORT="${PORT:-18300}"
+CACHE_HOST="${CACHE_HOST:-/home/andre/local-ai/cache}"
+PORT="${PORT:-8000}"
+BIND_HOST="${BIND_HOST:-100.64.255.60}"
+API_ENV_FILE="${API_ENV_FILE:-/home/andre/local-ai/secrets/api.env}"
 HOST_RESERVE_GIB="${HOST_RESERVE_GIB:-30}"
 GMU="${GMU:-}"
 MAXLEN="${MAXLEN:-262144}"
@@ -29,8 +30,7 @@ PLE_MODE="${PLE_MODE:-staged}"
 KV_DTYPE="${KV_DTYPE:-fp8_e4m3}"
 DRAFT_VOCAB="${DRAFT_VOCAB-$ROOT/src/miaai/draft_vocab_en_code_47k.txt}"
 MAMBA_SSM_CACHE_DTYPE="${MAMBA_SSM_CACHE_DTYPE-bfloat16}"
-PREFIX_CACHE="${PREFIX_CACHE:-0}"
-EXTRA="${EXTRA:-}"
+PREFIX_CACHE="${PREFIX_CACHE:-1}"
 
 for value in PORT MAXLEN SEQS MTP; do
   [[ "${!value}" =~ ^[1-9][0-9]*$ ]] || { echo "!! $value must be a positive integer" >&2; exit 2; }
@@ -57,8 +57,16 @@ fi
 for file in ple_layer.py ple_mmap.py model_state.py mtp_draft_vocab.py upstream-overlays/modelopt.py; do
   [[ -f "$PATCH_DIR/$file" ]] || { echo "!! recipe patch missing: $PATCH_DIR/$file" >&2; exit 3; }
 done
+python3 - "$API_ENV_FILE" <<'PYAUTH'
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+if not path.is_file() or path.stat().st_mode & 0o077:
+    raise SystemExit("API environment file must exist and be private (mode 0600)")
+if not re.fullmatch(r"VLLM_API_KEY=[A-Za-z0-9_-]{32,}\n?", path.read_text()):
+    raise SystemExit("API environment file must contain one nonempty URL-safe VLLM_API_KEY (32+ characters)")
+PYAUTH
 
-mkdir -p "$CACHE_HOST"
 PLE_ENV=()
 case "$PLE_MODE" in
   staged)
@@ -133,14 +141,21 @@ SSM_ARGS=()
 if [[ "${DRY_RUN:-0}" == 1 ]]; then
   docker() { printf '%q ' "$@"; printf '\n'; }
 else
-  docker rm -f "$NAME" >/dev/null 2>&1 || true
-  sync
-  sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1 || true
+  if docker container inspect "$NAME" >/dev/null 2>&1; then
+    echo "!! Container $NAME already exists; stop and remove it explicitly before recreating" >&2
+    exit 3
+  fi
+  # UID 0 without CAP_DAC_OVERRIDE still needs ownership of its writable cache.
+  install -d -o 0 -g 0 -m 0755 "$CACHE_HOST"
 fi
 
-# shellcheck disable=SC2086
+# GMU budgets model/KV memory; 112 GiB separately caps the whole process and page cache.
+# The host watchdog enforces the independent 6 GiB system-wide safety floor.
 docker run --gpus all -d --name "$NAME" --restart unless-stopped \
-  --network host --ipc host --shm-size 32g --ulimit memlock=-1:-1 \
+  --label local-ai.managed=true --memory 112g --memory-swap 112g \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --network host --ipc private --shm-size 32g --ulimit memlock=-1:-1 \
+  --env-file "$API_ENV_FILE" \
   -v "$MODEL_HOST:/models/qwen38fn:ro" -v "$CACHE_HOST:/root/.cache" \
   -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 -e VLLM_ENGINE_READY_TIMEOUT_S=3600 \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True -e CUTE_DSL_ARCH=sm_121a \
@@ -148,13 +163,15 @@ docker run --gpus all -d --name "$NAME" --restart unless-stopped \
   -e VLLM_USE_DEEP_GEMM=0 -e VLLM_USE_V2_MODEL_RUNNER=1 \
   "${PLE_ENV[@]}" "${DRAFT_ENV[@]}" "${DRAFT_MOUNT[@]}" "${OVERLAY_MOUNT[@]}" \
   "$IMAGE" /models/qwen38fn --served-model-name qwen3.8-flash-next \
-    --host 0.0.0.0 --port "$PORT" --trust-remote-code --quantization modelopt --tensor-parallel-size 1 \
+    --host "$BIND_HOST" --port "$PORT" --quantization modelopt --tensor-parallel-size 1 \
     --max-model-len "$MAXLEN" --max-num-seqs "$SEQS" --gpu-memory-utilization "$GMU" "${CHUNK_ARGS[@]}" \
     --no-enable-flashinfer-autotune "$PC_ARG" --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_xml \
-    --default-chat-template-kwargs '{"enable_thinking": false}' \
+    --default-chat-template-kwargs '{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"medium"}' \
+    --generation-config auto \
+    --override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}' \
     --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP}" \
-    "${GRAPH_ARGS[@]}" "${SSM_ARGS[@]}" --kv-cache-dtype "$KV_DTYPE" $EXTRA
+    "${GRAPH_ARGS[@]}" "${SSM_ARGS[@]}" --kv-cache-dtype "$KV_DTYPE" --mamba-cache-mode align
 
-echo ">> $NAME starting on http://127.0.0.1:$PORT with the NVIDIA full TP1 recipe"
+echo ">> $NAME starting on http://$BIND_HOST:$PORT with the NVIDIA full TP1 recipe"
 echo ">> gmu=$GMU (host reserve ${HOST_RESERVE_GIB} GiB of $(awk '/^MemTotal:/ {printf "%.1f", $2/1048576}' /proc/meminfo) GiB), maxlen=$MAXLEN seqs=$SEQS mtp=$MTP kv=$KV_DTYPE"
-echo ">> ready when: curl -fsS http://127.0.0.1:$PORT/health"
+echo ">> ready when: curl -fsS http://$BIND_HOST:$PORT/health"
