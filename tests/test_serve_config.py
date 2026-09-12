@@ -48,7 +48,8 @@ class ServeConfigTest(unittest.TestCase):
     def test_invalid_settings(self):
         for overrides in [{'SEQS': '0'}, {'MTP': '0'}, {'MTP': '03'},
                           {'CHUNK': 'bad'}, {'CAPTURE_SIZES': '4,0'},
-                          {'CAPTURE_SIZES': '4,broken'}, {'PREFIX_CACHE': 'yes'}]:
+                          {'CAPTURE_SIZES': '4,broken'}, {'PREFIX_CACHE': 'yes'},
+                          {'BIND_HOST': '0.0.0.0'}, {'BIND_HOST': '192.168.1.2'}]:
             with self.subTest(overrides=overrides):
                 result = subprocess.run(['bash', str(ROOT / 'scripts/serve.sh')],
                                         env={**self.env, **overrides},

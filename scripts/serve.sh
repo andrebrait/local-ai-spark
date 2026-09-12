@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NAME="${NAME:-qwen38-flash}"
+NAME=qwen38-flash
 IMAGE="${IMAGE:?Set IMAGE to the pinned local-ai image}"
 MODEL_HOST="${MODEL_HOST:-/home/andre/local-ai/models/Qwen3.8-Flash-Next-NVFP4}"
 PATCH_DIR="${PATCH_DIR:-$ROOT/src/full-recipe-patch}"
@@ -57,9 +57,12 @@ fi
 for file in ple_layer.py ple_mmap.py model_state.py mtp_draft_vocab.py upstream-overlays/modelopt.py; do
   [[ -f "$PATCH_DIR/$file" ]] || { echo "!! recipe patch missing: $PATCH_DIR/$file" >&2; exit 3; }
 done
-python3 - "$API_ENV_FILE" <<'PYAUTH'
+python3 - "$API_ENV_FILE" "$BIND_HOST" <<'PYAUTH'
 from pathlib import Path
-import re, sys
+import ipaddress, re, sys
+address = ipaddress.ip_address(sys.argv[2])
+if not (address.is_loopback or address in ipaddress.ip_network("100.64.0.0/10")):
+    raise SystemExit("Bind address must be loopback or a Tailscale IPv4 address")
 path = Path(sys.argv[1])
 if not path.is_file() or path.stat().st_mode & 0o077:
     raise SystemExit("API environment file must exist and be private (mode 0600)")
@@ -132,7 +135,11 @@ if [[ -n "$CAPTURE_SIZES" ]]; then
   GRAPH_ARGS=(--compilation-config "{\"mode\":0,\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[${CAPTURE_SIZES}]}")
 fi
 PC_ARG=--no-enable-prefix-caching
-[[ "$PREFIX_CACHE" == 1 ]] && PC_ARG=--enable-prefix-caching
+MAMBA_CACHE_MODE=none
+if [[ "$PREFIX_CACHE" == 1 ]]; then
+  PC_ARG=--enable-prefix-caching
+  MAMBA_CACHE_MODE=align
+fi
 CHUNK_ARGS=()
 [[ -n "$CHUNK" ]] && CHUNK_ARGS=(--max-num-batched-tokens "$CHUNK")
 SSM_ARGS=()
@@ -170,7 +177,7 @@ docker run --gpus all -d --name "$NAME" --restart unless-stopped \
     --generation-config auto \
     --override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}' \
     --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP}" \
-    "${GRAPH_ARGS[@]}" "${SSM_ARGS[@]}" --kv-cache-dtype "$KV_DTYPE" --mamba-cache-mode align
+    "${GRAPH_ARGS[@]}" "${SSM_ARGS[@]}" --kv-cache-dtype "$KV_DTYPE" --mamba-cache-mode "$MAMBA_CACHE_MODE"
 
 echo ">> $NAME starting on http://$BIND_HOST:$PORT with the NVIDIA full TP1 recipe"
 echo ">> gmu=$GMU (host reserve ${HOST_RESERVE_GIB} GiB of $(awk '/^MemTotal:/ {printf "%.1f", $2/1048576}' /proc/meminfo) GiB), maxlen=$MAXLEN seqs=$SEQS mtp=$MTP kv=$KV_DTYPE"

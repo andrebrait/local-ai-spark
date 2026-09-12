@@ -243,17 +243,17 @@ class PrefixCachePatchTest(unittest.TestCase):
         self.assertEqual(state._mamba_state_idx_gpu[0].value, -1)
 
     def test_rerun_and_unreviewed_input_handling(self):
-        before = patch.sha256(SEARCH)
-        fixed = SEARCH.replace(patch.SEARCH_OLD, patch.SEARCH_NEW)
-        after = patch.sha256(fixed)
-        self.assertEqual(patch.prepare_patch(fixed, before, after,
-                                            patch.SEARCH_OLD, patch.SEARCH_NEW), fixed)
-        with self.assertRaises(ValueError):
-            patch.prepare_patch(SEARCH + "# downstream edit\n", before, after,
-                                patch.SEARCH_OLD, patch.SEARCH_NEW)
-        with self.assertRaises(ValueError):
-            patch.prepare_patch(SEARCH, before, "unexpected output digest",
-                                patch.SEARCH_OLD, patch.SEARCH_NEW)
+        for source, old, new in ((SEARCH, patch.SEARCH_OLD, patch.SEARCH_NEW),
+                                 (ANNOTATE, patch.GROUP_OLD, patch.GROUP_NEW)):
+            with self.subTest(patch=old):
+                before = patch.sha256(source)
+                fixed = source.replace(old, new)
+                after = patch.sha256(fixed)
+                self.assertEqual(patch.prepare_patch(fixed, before, after, old, new), fixed)
+                with self.assertRaises(ValueError):
+                    patch.prepare_patch(source + "# downstream edit\n", before, after, old, new)
+                with self.assertRaises(ValueError):
+                    patch.prepare_patch(source, before, "unexpected output digest", old, new)
 
 
 if __name__ == "__main__":

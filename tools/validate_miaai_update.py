@@ -9,6 +9,7 @@ This is functional evidence, not a speed comparison or a quality benchmark.
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import json
 import math
 from pathlib import Path
@@ -17,12 +18,20 @@ from threading import Barrier
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import uuid4
 
 
 CONTEXT = 262144
 LONG_OUTPUT = 1024
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+HTTP = build_opener(ProxyHandler({}), NoRedirect())
 
 
 def message(text):
@@ -40,6 +49,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--api-key-file", type=Path)
     parser.add_argument("--mode", choices=("short", "long", "all"), default="all")
+    parser.add_argument("--allow-tailscale-http", action="store_true",
+                        help="Acknowledge encrypted Tailscale transport to a 100.64.0.0/10 address")
     args = parser.parse_args()
     args.base = args.base.rstrip("/")
     model = "qwen3.8-flash-next"
@@ -67,7 +78,7 @@ def main():
             headers["Authorization"] = "Bearer " + secret
         req = Request(args.base + path,
                       None if body is None else json.dumps(body).encode(), headers)
-        with urlopen(req, timeout=timeout) as response:
+        with HTTP.open(req, timeout=timeout) as response:
             return response.read().decode() if text else json.load(response)
 
     def run(name, operation):
@@ -162,11 +173,8 @@ def main():
             require(bool(content.strip()) and "paris" in content.lower(), "Missing appropriate final answer")
             require("<think>" not in content and "</think>" not in content,
                     "Reasoning markup leaked into final answer")
-            if fields:
-                require(any(isinstance(value, str) and value.strip() for value in fields.values()),
-                        "Reasoning field is present but empty under server defaults")
-            else:
-                row["reasoning_note"] = "No separate reasoning field exposed by endpoint"
+            require(any(isinstance(value, str) and value.strip() for value in fields.values()),
+                    "Server defaults did not expose nonempty reasoning")
         run("default-settings-medium-reasoning", defaults)
 
         def tools(row):
@@ -338,6 +346,22 @@ def main():
             require(json_answer(content) == state["expected"], "Near-full context needle retrieval failed")
         run("near-full-three-needle-retrieval", retrieval)
 
+        def exact_boundary(row):
+            require(state.get("token_ids"), "Exact boundary needs token-ID completions")
+            tokens = state["encoded"]["tokens"]
+            prompt = tokens + [tokens[len(tokens) // 2]] * (CONTEXT - 1 - len(tokens))
+            response = request("/v1/completions", {
+                "model": model, "prompt": prompt, "temperature": 0,
+                "max_tokens": 1, "ignore_eos": True,
+            })
+            row["response"] = response
+            row["usage"] = response["usage"]
+            row["prompt_tokens"] = row["usage"]["prompt_tokens"]
+            row["output_tokens"] = row["usage"]["completion_tokens"]
+            require(row["prompt_tokens"] == CONTEXT - 1 and row["output_tokens"] == 1,
+                    "Server did not accept the exact native input-plus-output budget")
+        run("exact-native-context-budget", exact_boundary)
+
         def over_limit(row):
             if state.get("token_ids"):
                 tokens = state["encoded"]["tokens"]
@@ -371,8 +395,32 @@ def main():
                 "--base must be an HTTP(S) endpoint without credentials, query or fragment")
         if args.api_key_file:
             secret = args.api_key_file.read_text().strip()
-            require(bool(secret) and "\n" not in secret and "\r" not in secret, "API key file must contain one nonempty line")
+            require(re.fullmatch(r"[A-Za-z0-9_-]{32,}", secret) is not None,
+                    "API key file must contain a raw URL-safe key of 32+ characters")
+            if parsed.scheme == "http":
+                address = ipaddress.ip_address(parsed.hostname)
+                protected = address.is_loopback or (
+                    args.allow_tailscale_http and address in ipaddress.ip_network("100.64.0.0/10")
+                )
+                require(protected, "Bearer credentials require HTTPS, loopback, or explicit Tailscale transport")
         request("/health", text=True, timeout=30)
+        def authentication(row):
+            require(bool(secret), "Authenticated acceptance requires --api-key-file")
+            row["cases"] = []
+            for path in ("/v1/models", "/invocations", "/tokenize", "/metrics", "/health"):
+                for label, headers in (
+                    ("missing", {}),
+                    ("wrong", {"Authorization": "Bearer deliberately-invalid-key"}),
+                ):
+                    try:
+                        body = b"{}" if path in ("/invocations", "/tokenize") else None
+                        with HTTP.open(Request(args.base + path, data=body, headers=headers), timeout=30) as response:
+                            status = response.status
+                    except HTTPError as error:
+                        status = error.code
+                    row["cases"].append({"path": path, "case": label, "status": status})
+                    require(status == 401, f"{path}: {label} credential was not rejected")
+        run("unauthenticated-inference-rejected", authentication)
         def metadata(row):
             response = request("/v1/models", timeout=30)
             row["models"] = response

@@ -17,6 +17,8 @@ The deployment uses `Dockerfile.local-ai`, not the historical `Dockerfile`.
 It pins the arm64 vLLM `8a728663` image and the official NVIDIA checkpoint
 revision `fc694b54fb0174e0913e6adf86691ef85a4ead47`. The checkpoint is unchanged:
 NVFP4 routed experts, BF16 side layers, and FP8 n-gram/MTP tensors.
+CI builds and validates this image with read-only permissions; it does not publish
+packages or deploy changes to the node.
 
 `scripts/serve.sh` uses staged NVMe n-gram reads, MTP3 with the 47,149-token
 draft vocabulary, six scheduler slots, 4,096-token prefill chunks, FP8 E4M3 KV,
@@ -36,6 +38,10 @@ penalty 1.5; for deeper reasoning, set `reasoning_effort` to `xhigh`.
 - API base: `http://100.64.255.60:8000/v1` over Tailscale.
 - Served model: `qwen3.8-flash-next`.
 - API key: `/home/andre/local-ai/secrets/api.key` on the Spark; never committed.
+- Launcher credential: `/home/andre/local-ai/secrets/api.env`, containing
+  `VLLM_API_KEY=` followed by that same raw key. Both files have mode 0600.
+- All HTTP routes require the bearer key, including health, metrics and tokenizer
+  diagnostics. Only CORS `OPTIONS` requests bypass authentication.
 - Source: `/home/andre/local-ai/source`; model and cache are sibling directories.
 - Evidence: `/home/andre/local-ai/evidence`, including checksums, package audit,
   runtime identities, authentication checks and serving acceptance.
@@ -43,7 +49,7 @@ penalty 1.5; for deeper reasoning, set `reasoning_effort` to `xhigh`.
 ```bash
 sudo docker logs --follow qwen38-flash
 sudo docker stop qwen38-flash       # also prevents automatic restart
-sudo docker start qwen38-flash      # reloads weights; wait for /health
+sudo docker start qwen38-flash      # reloads weights; wait for authenticated /health
 ```
 
 Docker's `unless-stopped` policy brings a running deployment back after a daemon
@@ -65,6 +71,7 @@ Acceptance runs against the real service:
 ```bash
 python3 /home/andre/local-ai/source/tools/validate_miaai_update.py \
   --base http://100.64.255.60:8000 \
+  --allow-tailscale-http \
   --api-key-file /home/andre/local-ai/secrets/api.key \
   --mode all --output /home/andre/local-ai/evidence/acceptance.json
 ```
@@ -337,16 +344,21 @@ NVMe into staging buffers instead of allocating the entire table on the GPU:
 - On unified memory, "CPU offload" saves nothing (same pool) — only serving
   from disk actually frees memory.
 
-## Setup (as run)
+## Fresh setup for this deployment
 
 ```bash
-git clone https://github.com/madeye/qwen38-flash-next-on-dgx-spark.git
+git clone --branch deploy/local-ai https://github.com/andrebrait/qwen38-flash-next-on-dgx-spark.git
 cd qwen38-flash-next-on-dgx-spark
-scripts/download-weights.sh  # official NVIDIA checkpoint, ~124 GiB, resumable
-scripts/serve.sh             # default NVIDIA TP1 recipe
-scripts/smoke-test.sh
-scripts/serve-public.sh     # optional legacy loopback vLLM + authenticated gateway
+sudo scripts/download-weights.sh  # pinned revision plus checksum verification
+sudo docker build -f Dockerfile.local-ai -t local-ai-qwen:reviewed .
+sudo env IMAGE=local-ai-qwen:reviewed scripts/serve.sh
 ```
+
+Before launching, provision the two credential files documented above using the
+same randomly generated URL-safe key (at least 32 characters). Install
+`scripts/local-ai-memory.service` and its referenced watchdog on the host.
+The example tag is for the build step; record the resulting image ID and use
+that immutable ID for the machine's persistent launch command, as this deployment does.
 
 `scripts/serve-legacy.sh` defaults: native 262,144-token context, MTP=3 speculative tokens,
 `--enable-prefix-caching`, deterministic exact QSA top-k, 4 concurrent sequences,
@@ -387,15 +399,16 @@ NVFP4.
 Hybrid trades a little cold-prefill speed for meaningfully faster decode and
 ~7 GiB less resident weight — the right default for an interactive/agentic box.
 
-## Serving it publicly
+## Historical legacy gateway (not used by this deployment)
 
-`scripts/serve.sh` publishes the API on `0.0.0.0` with no authentication of its
-own — fine on a private box, not something to leave on a LAN. `serve-public.sh`
-pins the container's port to loopback instead and fronts it with `gateway.py`:
+The following section documents the older `serve-legacy.sh` and
+`serve-public.sh` profile only. It does **not** describe the authenticated
+Tailscale-only `serve.sh` deployment above. The legacy gateway fronts a
+loopback container with `gateway.py`; do not launch it alongside the current node.
 
 ```bash
 scripts/serve-public.sh              # container + gateway on 0.0.0.0:8080
-MODE=hybrid scripts/serve-public.sh  # every serve.sh variable passes through
+MODE=hybrid scripts/serve-public.sh  # legacy launcher variables only
 GW_PORT=9000 scripts/serve-public.sh
 ```
 

@@ -99,7 +99,7 @@ def prepare_patch(source: str, before: str, after: str, old: str, new: str) -> s
     """Accept exactly the reviewed original or this patch's complete output."""
     digest = sha256(source)
     if digest == after:
-        if source.count(new) != 1 or source.count(old) != 0:
+        if source.count(new) != 1 or source.count(old) != new.count(old):
             raise ValueError("already-fixed source has unexpected patch counts")
         ast.parse(source)
         return source
