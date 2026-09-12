@@ -355,7 +355,10 @@ sudo docker build -f Dockerfile.local-ai -t local-ai-qwen:reviewed .
 sudo install -m 0644 scripts/local-ai-memory.service /etc/systemd/system/local-ai-memory.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now local-ai-memory.service
-sudo env IMAGE=local-ai-qwen:reviewed scripts/serve.sh
+IMAGE="$(sudo docker image inspect --format '{{.Id}}' local-ai-qwen:reviewed)"
+printf '#!/bin/sh\nexport IMAGE=%s\nexec /bin/bash /home/andre/local-ai/source/scripts/serve.sh\n' "$IMAGE" > /home/andre/local-ai/launch.sh
+chmod 0755 /home/andre/local-ai/launch.sh
+sudo /home/andre/local-ai/launch.sh
 ```
 
 Before launching, provision the two credential files documented above using the

@@ -60,7 +60,7 @@ done
 python3 - "$API_ENV_FILE" "$BIND_HOST" <<'PYAUTH'
 from pathlib import Path
 import ipaddress, re, sys
-address = ipaddress.ip_address(sys.argv[2])
+address = ipaddress.IPv4Address(sys.argv[2])
 if not (address.is_loopback or address in ipaddress.ip_network("100.64.0.0/10")):
     raise SystemExit("Bind address must be loopback or a Tailscale IPv4 address")
 path = Path(sys.argv[1])
