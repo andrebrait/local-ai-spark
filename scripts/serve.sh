@@ -149,7 +149,7 @@ else
   install -d -o 0 -g 0 -m 0755 "$CACHE_HOST"
 fi
 
-# GMU budgets model/KV memory; 112 GiB separately caps the whole process and page cache.
+# GMU budgets model/KV memory; 112 GiB caps cgroup-accounted host allocations.
 # The host watchdog enforces the independent 6 GiB system-wide safety floor.
 docker run --gpus all -d --name "$NAME" --restart unless-stopped \
   --label local-ai.managed=true --memory 112g --memory-swap 112g \

@@ -11,19 +11,75 @@ at `d83f10c`, with its Apache-licensed vLLM patch set vendored under
 [blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX),
 remains available through the explicit legacy launchers.
 
-## Default NVIDIA TP1 recipe (2026-09-10)
+## Local AI deployment (this fork)
 
-`bash scripts/serve.sh` starts the validated single-Spark NVIDIA recipe against
-the official `nvidia/Qwen3.8-Flash-Next-NVFP4` checkpoint at
-`/var/tmp/models/Qwen3.8-Flash-Next-NVFP4-nvidia`. It uses the pinned vLLM
-nightly `8a728663`, staged disk PLE gather, MiaAI's 47,149-token MTP3 draft vocabulary,
-six sequences, 4,096-token prefill chunks, FP8 KV, 262,144 context tokens,
-GPU memory utilization derived from `HOST_RESERVE_GIB=30` (unless `GMU` is
-explicitly set), decode-only CUDA graphs, and disabled prefix caching. GDN
-recurrent state uses BF16. The service uses Docker's `unless-stopped` policy,
-so it returns when the Docker daemon restarts.
+The deployment uses `Dockerfile.local-ai`, not the historical `Dockerfile`.
+It pins the arm64 vLLM `8a728663` image and the official NVIDIA checkpoint
+revision `fc694b54fb0174e0913e6adf86691ef85a4ead47`. The checkpoint is unchanged:
+NVFP4 routed experts, BF16 side layers, and FP8 n-gram/MTP tensors.
 
-### Current live performance
+`scripts/serve.sh` uses staged NVMe n-gram reads, MTP3 with the 47,149-token
+draft vocabulary, six scheduler slots, 4,096-token prefill chunks, FP8 E4M3 KV,
+BF16 recurrent state, and the native **262,144-token input-plus-output limit**.
+The image adds version-checked prefix-cache corrections, including explicit
+Qwen MTP group identification. Prefix reuse is enabled with aligned Mamba state.
+
+Thinking and preserved thinking are enabled at medium effort. Defaults are
+temperature 1.0, top-p 0.95, top-k 20, min-p 0, presence penalty 0, and repetition
+penalty 1.0. The model's generation configuration retains its official EOS tokens.
+Clients may override sampling and `chat_template_kwargs` per request. For
+non-thinking mode, Qwen recommends temperature 0.7, top-p 0.8 and presence
+penalty 1.5; for deeper reasoning, set `reasoning_effort` to `xhigh`.
+
+### Access and operations
+
+- API base: `http://100.64.255.60:8000/v1` over Tailscale.
+- Served model: `qwen3.8-flash-next`.
+- API key: `/home/andre/local-ai/secrets/api.key` on the Spark; never committed.
+- Source: `/home/andre/local-ai/source`; model and cache are sibling directories.
+- Evidence: `/home/andre/local-ai/evidence`, including checksums, package audit,
+  runtime identities, authentication checks and serving acceptance.
+
+```bash
+sudo docker logs --follow qwen38-flash
+sudo docker stop qwen38-flash       # also prevents automatic restart
+sudo docker start qwen38-flash      # reloads weights; wait for /health
+```
+
+Docker's `unless-stopped` policy brings a running deployment back after a daemon
+restart. `local-ai-memory.service` stops it if system-wide available memory
+falls below 6 GiB; investigate memory pressure before manually starting it again.
+The 112-GiB cgroup limit is an additional host-allocation backstop, not an
+accurate accounting of all GB10 driver memory. GMU separately derives its
+model/KV budget from a 30-GiB reserve. Scheduler slots do not imply that six
+full-context requests fit simultaneously.
+
+To recreate the container, stop and remove **only this managed container**, then
+run `sudo /home/andre/local-ai/launch.sh`, which pins the built image ID.
+Build changes with `docker build -f Dockerfile.local-ai -t local-ai-qwen:TAG .`;
+update the machine's pinned launch image deliberately, retaining the previous
+image and source snapshot for rollback. Do not use a moving `latest` image.
+
+Acceptance runs against the real service:
+
+```bash
+python3 /home/andre/local-ai/source/tools/validate_miaai_update.py \
+  --base http://100.64.255.60:8000 \
+  --api-key-file /home/andre/local-ai/secrets/api.key \
+  --mode all --output /home/andre/local-ai/evidence/acceptance.json
+```
+
+This checks reasoning, tool-call JSON, concurrent isolation, growing-prefix
+recall and cache hits, server-tokenized near-full context, and over-limit
+rejection. An enabled flag or successful health check is not acceptance.
+
+## Historical upstream NVIDIA TP1 recipe (2026-09-10)
+
+The measurements below belong to the upstream madeye deployment, not this
+machine. That profile used thinking off and prefix reuse off; its numbers
+must not be presented as measurements of the authenticated configuration above.
+
+### Historical performance
 
 Measured on 2026-09-10 at 11:21–11:23 UTC, directly against the local vLLM API.
 Temperature 0, thinking off, native MTP3 enabled, DFlash disabled.
@@ -75,12 +131,12 @@ memory through `HOST_RESERVE_GIB`; an explicit `GMU` overrides that calculation.
 MiaAI uses a different checkpoint and packed PLE format, so its loader and memory estimates
 are not interchangeable with these. DFlash is not enabled by `serve.sh`.
 
-`DRAFT_VOCAB=65536 MAMBA_SSM_CACHE_DTYPE=float32 bash scripts/serve.sh` restores
-the earlier draft selection and state precision. `DRAFT_VOCAB=0` (or empty)
-uses the full MTP vocabulary. A file path selects a custom token-ID list;
-relative paths resolve against this repository. Invalid selections fail before
-the existing container is stopped. Non-English or non-code traffic may have
-different draft acceptance; upstream's published speedups are not local results.
+With `IMAGE` set to the reviewed local image, `DRAFT_VOCAB=65536` and
+`MAMBA_SSM_CACHE_DTYPE=float32` restore the earlier draft selection and state
+precision. `DRAFT_VOCAB=0` (or empty) uses the full MTP vocabulary. A file path
+selects a custom token-ID list; relative paths resolve against this repository.
+Invalid selections fail before launch; existing containers are never removed automatically.
+Non-English or non-code traffic may have different draft acceptance; upstream's published speedups are not local results.
 
 Before this update, on 2026-09-06 at `GMU=0.80`, the measured 40-prompt median was
 **43.5 tok/s** with **0.26 s** median TTFT and a 0.88 automatic task score. The GPU is locked to its supported 3,003 MHz

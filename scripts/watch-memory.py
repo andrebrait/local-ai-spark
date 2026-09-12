@@ -17,6 +17,6 @@ while True:
             if (container["State"]["Running"] and
                     container["Config"].get("Labels", {}).get("local-ai.managed") == "true"):
                 print("Stopping local AI: MemAvailable below 6 GiB", flush=True)
-                subprocess.run(["docker", "stop", "--time", "10", NAME], check=True, timeout=30)
+                subprocess.run(["docker", "stop", "--timeout", "10", NAME], check=True, timeout=30)
                 # An intentional stop prevents Docker's restart policy from causing an OOM loop.
     time.sleep(5)
