@@ -347,10 +347,14 @@ NVMe into staging buffers instead of allocating the entire table on the GPU:
 ## Fresh setup for this deployment
 
 ```bash
-git clone --branch deploy/local-ai https://github.com/andrebrait/qwen38-flash-next-on-dgx-spark.git
-cd qwen38-flash-next-on-dgx-spark
+mkdir -p /home/andre/local-ai
+git clone --branch deploy/local-ai https://github.com/andrebrait/qwen38-flash-next-on-dgx-spark.git /home/andre/local-ai/source
+cd /home/andre/local-ai/source
 sudo scripts/download-weights.sh  # pinned revision plus checksum verification
 sudo docker build -f Dockerfile.local-ai -t local-ai-qwen:reviewed .
+sudo install -m 0644 scripts/local-ai-memory.service /etc/systemd/system/local-ai-memory.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now local-ai-memory.service
 sudo env IMAGE=local-ai-qwen:reviewed scripts/serve.sh
 ```
 

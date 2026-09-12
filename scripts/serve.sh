@@ -181,4 +181,4 @@ docker run --gpus all -d --name "$NAME" --restart unless-stopped \
 
 echo ">> $NAME starting on http://$BIND_HOST:$PORT with the NVIDIA full TP1 recipe"
 echo ">> gmu=$GMU (host reserve ${HOST_RESERVE_GIB} GiB of $(awk '/^MemTotal:/ {printf "%.1f", $2/1048576}' /proc/meminfo) GiB), maxlen=$MAXLEN seqs=$SEQS mtp=$MTP kv=$KV_DTYPE"
-echo ">> ready when: curl -fsS http://$BIND_HOST:$PORT/health"
+echo ">> ready when an authenticated GET to http://$BIND_HOST:$PORT/health returns 200"

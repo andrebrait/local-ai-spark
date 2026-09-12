@@ -1,7 +1,7 @@
 [Unit]
 Description=Local AI unified-memory safety stop
 After=docker.service
-Requires=docker.service
+Wants=docker.service
 
 [Service]
 Type=simple

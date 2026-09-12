@@ -3,7 +3,27 @@ name: Validate local AI image
 on:
   push:
     branches: [main]
+    paths:
+      - "Dockerfile.local-ai"
+      - "src/**"
+      - "scripts/serve.sh"
+      - "scripts/download-weights.sh"
+      - "scripts/watch-memory.py"
+      - "scripts/local-ai-memory.service"
+      - "tools/validate_miaai_update.py"
+      - "tests/**"
+      - ".github/workflows/build-image.yml"
   pull_request:
+    paths:
+      - "Dockerfile.local-ai"
+      - "src/**"
+      - "scripts/serve.sh"
+      - "scripts/download-weights.sh"
+      - "scripts/watch-memory.py"
+      - "scripts/local-ai-memory.service"
+      - "tools/validate_miaai_update.py"
+      - "tests/**"
+      - ".github/workflows/build-image.yml"
   workflow_dispatch:
 
 permissions:
@@ -30,7 +50,7 @@ jobs:
       - name: Reclaim ephemeral runner disk for CUDA image
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost /usr/share/swift "$AGENT_TOOLSDIRECTORY"
+                      /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache
           df -h /
 
       - name: Build pinned runtime and verify patch reruns and authentication

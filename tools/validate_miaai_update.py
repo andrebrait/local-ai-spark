@@ -150,10 +150,9 @@ def main():
         count = result.get("count")
         require(isinstance(count, int) and count > 0, "Invalid /tokenize count")
         tokens = result.get("tokens")
-        if tokens is not None:
-            require(isinstance(tokens, list) and len(tokens) == count
-                    and all(type(token) is int and token >= 0 for token in tokens),
-                    "/tokenize token IDs disagree with its count")
+        require(isinstance(tokens, list) and len(tokens) == count
+                and all(type(token) is int and token >= 0 for token in tokens),
+                "Exact context acceptance requires matching /tokenize token IDs")
         return result
 
     def short_checks():
@@ -299,46 +298,20 @@ def main():
             require(260000 <= actual <= CONTEXT - LONG_OUTPUT, "Could not construct near-full tokenized context")
             row.update(prompt_tokens=actual, expected=values, needle_record_positions=positions,
                        max_output_tokens=LONG_OUTPUT, context_limit=CONTEXT)
-            state.update(messages=messages, encoded=encoded, expected=values, records=records)
+            state.update(encoded=encoded, expected=values)
         built = run("near-full-prompt-tokenization", build)
         if not built["passed"]:
             return
 
-        def probe(row):
-            encoded = tokenize([message("Reply with the single word READY.")])
-            if encoded.get("tokens") is None:
-                row["supported"] = False
-                row["reason"] = "/tokenize does not return token IDs; using measured chat prompt"
-                return
-            try:
-                response = request("/v1/completions", {
-                    "model": model, "prompt": encoded["tokens"], "max_tokens": 128, "temperature": 0,
-                })
-            except HTTPError as exc:
-                if exc.code not in (400, 404, 405, 422):
-                    raise
-                row.update(supported=False, http_status=exc.code,
-                           error_body=exc.read().decode(errors="replace"),
-                           reason="Token-ID completion probe rejected; using measured chat prompt")
-                return
-            record_response(row, response)
-            require(row["prompt_tokens"] == encoded["count"], "Completion altered supplied token-ID count")
-            state["token_ids"] = True
-            row["supported"] = True
-        run("token-id-completions-capability", probe)
 
         def retrieval(row):
             row.update(tokenized_prompt_tokens=state["encoded"]["count"], expected=state["expected"])
             row["metrics_before"] = metrics()
-            if state.get("token_ids"):
-                row["endpoint"] = "/v1/completions"
-                response = request(row["endpoint"], {
-                    "model": model, "prompt": state["encoded"]["tokens"],
-                    "temperature": 0, "max_tokens": LONG_OUTPUT,
-                })
-            else:
-                row["endpoint"] = "/v1/chat/completions"
-                response = chat(state["messages"], max_tokens=LONG_OUTPUT)
+            row["endpoint"] = "/v1/completions"
+            response = request(row["endpoint"], {
+                "model": model, "prompt": state["encoded"]["tokens"],
+                "temperature": 0, "max_tokens": LONG_OUTPUT,
+            })
             content = record_response(row, response)
             row["metrics_after"] = metrics()
             require(row["prompt_tokens"] == state["encoded"]["count"], "Usage count differs from /tokenize; possible truncation/template mismatch")
@@ -347,7 +320,6 @@ def main():
         run("near-full-three-needle-retrieval", retrieval)
 
         def exact_boundary(row):
-            require(state.get("token_ids"), "Exact boundary needs token-ID completions")
             tokens = state["encoded"]["tokens"]
             prompt = tokens + [tokens[len(tokens) // 2]] * (CONTEXT - 1 - len(tokens))
             response = request("/v1/completions", {
@@ -363,18 +335,10 @@ def main():
         run("exact-native-context-budget", exact_boundary)
 
         def over_limit(row):
-            if state.get("token_ids"):
-                tokens = state["encoded"]["tokens"]
-                prompt = tokens + [tokens[len(tokens) // 2]] * (CONTEXT + 1 - len(tokens))
-                row.update(prompt_tokens=len(prompt), endpoint="/v1/completions")
-                body = {"model": model, "prompt": prompt, "max_tokens": 1, "temperature": 0}
-            else:
-                text = state["messages"][0]["content"] + "\n" + "\n".join(state["records"][:1000])
-                messages = [message(text)]
-                encoded = tokenize(messages)
-                row.update(prompt_tokens=encoded["count"], endpoint="/v1/chat/completions")
-                body = {"model": model, "messages": messages, "max_tokens": 1,
-                        "chat_template_kwargs": {"enable_thinking": False}}
+            tokens = state["encoded"]["tokens"]
+            prompt = tokens + [tokens[len(tokens) // 2]] * (CONTEXT + 1 - len(tokens))
+            row.update(prompt_tokens=len(prompt), endpoint="/v1/completions")
+            body = {"model": model, "prompt": prompt, "max_tokens": 1, "temperature": 0}
             require(row["prompt_tokens"] > CONTEXT, "Over-limit probe did not exceed actual context")
             try:
                 response = request(row["endpoint"], body)
