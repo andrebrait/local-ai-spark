@@ -110,6 +110,28 @@ SEED = '''class MambaHybridModelState:
             )
 '''
 
+ANNOTATE = '''def annotate(vllm_config, kv_cache_spec, kv_cache_groups,
+             use_deepseek_v4_fallback=False):
+    spec_config = vllm_config.speculative_config
+    if spec_config is None or not spec_config.use_eagle_block_drop():
+        return
+
+    for group in kv_cache_groups:
+        if any(
+            getattr(spec, "non_causal_multi_token_decode", False)
+            for spec in iter_layer_specs(group.kv_cache_spec)
+        ):
+            group.is_eagle_group = True
+
+    if not use_deepseek_v4_fallback:
+        return
+    last_layer = next(reversed(kv_cache_spec))
+    for group in kv_cache_groups:
+        if last_layer in group.layer_names:
+            group.is_eagle_group = True
+            break
+'''
+
 
 def patched_fixture(source, old, new):
     return patch.prepare_patch(source, patch.sha256(source),
@@ -150,6 +172,24 @@ class Scalar:
 
 
 class PrefixCachePatchTest(unittest.TestCase):
+    def test_only_mtp_groups_require_draft_lookahead(self):
+        config = SimpleNamespace(
+            model_config=SimpleNamespace(hf_config=SimpleNamespace(model_type="qwen4_exp")),
+            speculative_config=SimpleNamespace(method="mtp", use_eagle_block_drop=lambda: True),
+        )
+        names = ["model.layers.0.linear_attn", "model.layers.3.self_attn",
+                 "draft_model.mtp.layers.48.self_attn"]
+        for fixed in (False, True):
+            source = patched_fixture(ANNOTATE, patch.GROUP_OLD, patch.GROUP_NEW) if fixed else ANNOTATE
+            namespace = {"iter_layer_specs": lambda spec: [spec]}
+            exec(compile(source, "<upstream-annotation>", "exec"), namespace)
+            groups = [SimpleNamespace(layer_names=[name], kv_cache_spec=object(),
+                                      is_eagle_group=False) for name in names]
+            namespace["annotate"](config, {}, groups)
+            self.assertEqual([group.is_eagle_group for group in groups], [False, False, fixed])
+        with self.assertRaises(ValueError):
+            namespace["annotate"](config, {}, groups[:2])
+
     def search(self, max_length, alignment, drop, boundaries, fixed=True):
         source = SEARCH
         if fixed:

@@ -47,6 +47,25 @@ SEED_NEW = (
     "                (new_req_data.num_computed_tokens - 1) // block_size\n"
     "            )\n"
 )
+GROUP_OLD = "    if not use_deepseek_v4_fallback:\n        return\n"
+GROUP_NEW = """    # Qwen4Exp registers its standalone MTP decoder under the mtp namespace.
+    # Mark only its groups: flag-all makes Mamba's aligned state lookup miss.
+    if (
+        vllm_config.model_config.hf_config.model_type == "qwen4_exp"
+        and spec_config.method == "mtp"
+    ):
+        draft_groups = [
+            group for group in kv_cache_groups
+            if any("mtp" in name.split(".") for name in group.layer_names)
+        ]
+        if not draft_groups:
+            raise ValueError("Qwen4Exp MTP cache groups were not identified")
+        for group in draft_groups:
+            group.is_eagle_group = True
+
+    if not use_deepseek_v4_fallback:
+        return
+"""
 PATCHES = (
     (
         "vllm/v1/core/single_type_kv_cache_manager.py",
@@ -61,6 +80,13 @@ PATCHES = (
         "bcad24da707f2346f80f3b4c13a8f39017c4db8a7df8297219258e810689291e",
         SEED_OLD,
         SEED_NEW,
+    ),
+    (
+        "vllm/v1/core/kv_cache_utils.py",
+        "7d299419aece21423962748d14101f60441a0f1c844c1bb37d53f6541d50da3a",
+        "2b0dfe37722ec4e99babc3bd28f929c6ac51907529a3be7b0c8be260c2ab114e",
+        GROUP_OLD,
+        GROUP_NEW,
     ),
 )
 
@@ -95,7 +121,7 @@ def apply_patches(site_packages: Path) -> None:
         raise ValueError(f"{ENGINE}: expected the pinned upstream #53906 geometry fix")
     ast.parse(engine_source)
     pending = []
-    # Validate every input/output before changing either installed source file.
+    # Validate every input/output before changing any installed source file.
     for relative, before, after, old, new in PATCHES:
         path = site_packages / relative
         source = path.read_bytes().decode("utf-8")
