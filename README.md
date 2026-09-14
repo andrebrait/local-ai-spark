@@ -21,7 +21,7 @@ CI builds and validates this image with read-only permissions; it does not publi
 packages or deploy changes to the node.
 
 `scripts/serve.sh` uses staged NVMe n-gram reads, MTP3 with the 47,149-token
-draft vocabulary, **two scheduler slots**, 4,096-token prefill chunks, a fixed
+draft vocabulary, **one scheduler slot**, 4,096-token prefill chunks, a fixed
 **5,368,709,120-byte (5 GiB) FP8 E4M3 KV pool**, BF16 recurrent state, decode
 graphs `[4,8]`, and the native **262,144-token input-plus-output limit**.
 The image adds version-checked prefix-cache corrections, including explicit
@@ -78,44 +78,13 @@ sample, a dead/stalled health thread, or a failed RAM read stops and latches.
 An occupied bind port is refused before creating the model. An unassigned private
 address is given up to 60 seconds to appear, covering normal Tailscale boot timing.
 
-### Controller model budgets
+### Controller model selection
 
-OMP and its agents run on the controller, not on the Spark. No OMP source patch
-or second model instance is required. Keep `dgx-vllm/qwen3.8-flash-next` at its
-native 262,144-token context. In the controller's private `models.yml`, duplicate
-that provider as `dgx-worker`, preserving its endpoint, served model ID,
-authentication command, capabilities and compatibility settings. Change only
-the copied model's name and advertised budgets:
-
-```yaml
-name: Qwen3.8-Flash-Next (DGX worker 128 Ki)
-contextWindow: 131072
-maxTokens: 131072
-```
-
-Bind the existing generic task role in the controller's `config.yml`:
-
-```yaml
-modelRoles:
-  task: dgx-worker/qwen3.8-flash-next:medium
-```
-
-Merge that field into the existing role map; do not replace other roles or
-explicit cloud-agent pins. Other local agent definitions should also select
-`dgx-worker`, not the full-context entry. Refresh OMP's model catalog after adding
-the provider; new sessions load it at startup.
-
-These entries are client working budgets, not GPU reservations or server-side
-partitions. The server still owns one 5 GiB KV pool and two active slots. Two
-131,072-token working contexts total 262,144 tokens, below the measured 333,904-token
-pool capacity. Large actual requests near the native maximum should run without
-another large active request.
-
-Keep normal OMP compaction settings. With its default 15% reserve, the worker
-budget triggers compaction around 111k tokens; the earlier 96,000-token trial
-threshold was experimental, not a deployment requirement. The trial's 8,192-token
-output cap is not installed as a production limit. Native compaction and real
-worker routing still require end-to-end acceptance with these entries.
+OMP and its agents run on the controller, not on the Spark. Use
+`dgx-vllm/qwen3.8-flash-next` with its native **262,144-token context**.
+The server processes one sequence at a time; additional requests queue.
+No smaller worker alias, task-role change, or OMP compaction patch is required.
+Keep existing task routing and normal OMP compaction settings unchanged.
 
 ### Safety state and recovery
 
@@ -124,8 +93,9 @@ worker routing still require end-to-end acceptance with these entries.
   require the same reserve again. Only then atomically write/fsync the
   root-private `/var/lib/local-ai-model/state.json` and its directory **before
   create/start**. Each run records a random ownership label and the full Docker
-  container ID. The compacted-start experiment eliminated the reproducible
-  NVIDIA allocation warnings seen in the two preceding cold loads. This gate
+  container ID. One manually compacted start had no NVIDIA allocation warnings,
+  but a later automatically compacted start logged them again. Host compaction
+  is not an established fix, and startup qualification remains open. This gate
   allows approximately 96 GiB of observed startup allocation plus the 20 GiB
   runtime reserve; the roughly 25–28 GiB available **after** loading is not
   sufficient headroom to start another model.
@@ -274,7 +244,7 @@ vocabulary rows while the target still verifies with its full vocabulary;
 the data and upstream license are in [`src/miaai/`](src/miaai/PROVENANCE.md).
 
 These are historical experiments, **not production override instructions**.
-The current launcher pins two slots, graphs `[4,8]`, staged PLE and 5 GiB KV.
+The current launcher pins one slot, graphs `[4,8]`, staged PLE and 5 GiB KV.
 `HOST_RESERVE_GIB`, custom draft/patch selections, alternative precision and
 larger/unbounded KV profiles are refused before CUDA starts. MiaAI uses a
 different checkpoint and packed PLE format; its memory estimates are not

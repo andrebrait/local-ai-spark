@@ -38,7 +38,7 @@ class ServeConfigTest(unittest.TestCase):
         args = shlex.split(result.stdout)
         self.assertEqual(args[:2], ['docker', 'create'])
         self.assertIn(IMAGE, args)
-        for key, value in {'--restart': 'no', '--max-num-seqs': '2',
+        for key, value in {'--restart': 'no', '--max-num-seqs': '1',
                            '--max-model-len': '262144', '--kv-cache-memory-bytes': '5368709120',
                            '--env-file': str(self.api_env), '--kv-cache-dtype': 'fp8_e4m3',
                            '--mamba-cache-mode': 'align'}.items():
@@ -84,7 +84,7 @@ class ServeConfigTest(unittest.TestCase):
         self.assertNotEqual(self.launch(API_ENV_FILE=str(link)).returncode, 0)
 
     def test_unsafe_production_overrides_are_refused(self):
-        for overrides in [{'SEQS': '6'}, {'MAXLEN': '524288'}, {'MTP': '03'},
+        for overrides in [{'SEQS': '2'}, {'MAXLEN': '524288'}, {'MTP': '03'},
                           {'CHUNK': ''}, {'CAPTURE_SIZES': 'auto'}, {'CAPTURE_SIZES': '4,0'},
                           {'PREFIX_CACHE': '0'}, {'KV_CACHE_MEMORY_BYTES': ''},
                           {'KV_CACHE_MEMORY_BYTES': '10737418240'}, {'KV_DTYPE': 'auto'},

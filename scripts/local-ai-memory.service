@@ -1,5 +1,5 @@
 [Unit]
-Description=Local AI two-slot model and fail-closed RAM supervisor
+Description=Local AI single-slot model and fail-closed RAM supervisor
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target

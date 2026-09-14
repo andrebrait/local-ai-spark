@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Production two-slot recipe. The foreground supervisor owns every lifecycle action.
+# Production single-slot recipe. The foreground supervisor owns every lifecycle action.
 set -euo pipefail
 set +x
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,7 +11,7 @@ PORT="${PORT-8000}"
 API_ENV_FILE="${API_ENV_FILE-/home/andre/local-ai/secrets/api.env}"
 
 # Old tuning knobs must not silently change this allocation plan (including empty values).
-for setting in 'MAXLEN=262144' 'SEQS=2' 'MTP=3' 'CHUNK=4096' 'CAPTURE_SIZES=4,8' \
+for setting in 'MAXLEN=262144' 'SEQS=1' 'MTP=3' 'CHUNK=4096' 'CAPTURE_SIZES=4,8' \
   'PLE_MODE=staged' 'PLE_WORKERS=64' 'KV_DTYPE=fp8_e4m3' 'KV_CACHE_MEMORY_BYTES=5368709120' \
   'MAMBA_SSM_CACHE_DTYPE=bfloat16' 'PREFIX_CACHE=1' 'GMU=0.7533'; do
   key="${setting%%=*}"; expected="${setting#*=}"
@@ -80,7 +80,7 @@ ARGS=(--gpus all --init --restart no --pull never --memory 112g --memory-swap 11
   -e QWEN4EXP_DRAFT_VOCAB=/opt/qwen38-draft-vocab.txt
   "$IMAGE" -c "$GATE" /models/qwen38fn --served-model-name qwen3.8-flash-next
   --host "$BIND_HOST" --port "$PORT" --quantization modelopt --tensor-parallel-size 1
-  --max-model-len 262144 --max-num-seqs 2 --gpu-memory-utilization 0.7533
+  --max-model-len 262144 --max-num-seqs 1 --gpu-memory-utilization 0.7533
   --max-num-batched-tokens 4096 --kv-cache-memory-bytes 5368709120
   --no-enable-flashinfer-autotune --enable-prefix-caching --enable-prompt-tokens-details
   --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_xml
