@@ -86,6 +86,88 @@ The server processes one sequence at a time; additional requests queue.
 No smaller worker alias, task-role change, or OMP compaction patch is required.
 Keep existing task routing and normal OMP compaction settings unchanged.
 
+Merge this credential-free entry into the controller's `~/.omp/agent/models.yml`
+without replacing its other providers:
+
+```yaml
+providers:
+  dgx-vllm:
+    baseUrl: http://100.64.255.60:8000/v1
+    api: openai-completions
+    apiKey: '!cat /root/.omp/agent/secrets/dgx-vllm.key'
+    authHeader: true
+    models:
+    - id: qwen3.8-flash-next
+      name: Qwen3.8-Flash-Next (DGX Spark NVFP4)
+      reasoning: true
+      thinking:
+        mode: effort
+        efforts: [low, medium, xhigh]
+        defaultLevel: medium
+        requiresEffort: false
+      input: [text, image]
+      supportsTools: true
+      contextWindow: 262144
+      maxTokens: 262144
+      omitMaxOutputTokens: true
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
+      compat:
+        maxTokensField: max_tokens
+        supportsStore: false
+        supportsDeveloperRole: false
+        thinkingFormat: qwen-chat-template
+        qwenTemplateReasoningEffort: true
+        reasoningContentField: reasoning
+        replayReasoningContent: true
+        qwenPreserveThinking: true
+        streamFirstEventTimeoutMs: 0
+        streamIdleTimeoutMs: 1800000
+```
+
+Refresh the model catalog or start a new OMP session after changing this entry
+or rotating its credential. Existing sessions may retain resolved model metadata.
+
+### Lessons learned (2026-09-14)
+
+- **Keep the operating target small.** The final choice is one active sequence
+  and the native 262,144-token input-plus-output limit. Two-worker context
+  experiments and custom OMP policies are not prerequisites for using this node.
+  The container retains its historical `qwen38-flash-two-slot` name solely for
+  lifecycle identity; the launcher now allows only one active sequence.
+- **MoE sparsity does not remove weight-storage costs.** What makes this
+  checkpoint fit is the staged, disk-backed 47.68 GiB PLE lookup table, not
+  arbitrary expert streaming. Keep the official mixed-precision checkpoint
+  unchanged and keep KV allocation explicit.
+- **Separate failed allocation attempts from fatal failures.** NVIDIA
+  `NV_ERR_NO_MEMORY` messages occurred during starts that subsequently reached
+  readiness. That is not proof of a harmless cause, nor proof of a host OOM.
+  Correlate them with CUDA errors, Xids, host OOM kills, free memory and service
+  health. The [driver logging site](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/580.173.02/src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c#L1359)
+  returns the failed allocation status; PyTorch also distinguishes
+  [allocation retries from thrown OOMs](https://docs.pytorch.org/docs/2.14/generated/torch.cuda.memory.memory_stats.html).
+  A manually compacted clean start did not establish a repeatable fix.
+- **Do not infer causality from adjacent events.** The worker that omitted
+  `read_fixture` had not compacted. A peer began compaction around the same time.
+  A different run passing with synchronous soft compaction did not demonstrate
+  an OMP asynchronous-compaction bug. A later offline reconstruction included
+  the tool and matched the recorded prompts, but was not the original wire
+  capture. No per-agent compaction patch is part of this deployment.
+- **Keep diagnostics credential-safe.** Runtime model metadata can contain
+  resolved authorization headers even when configuration uses a key-file
+  command. Redact before logging, keep diagnostic directories mode 0700 and
+  secret files mode 0600, and rotate any disclosed key. Keep `api.env`, `api.key`
+  and the controller's `/root/.omp/agent/secrets/dgx-vllm.key` synchronized.
+  Verify the replacement key succeeds and the retired key returns HTTP 401.
+- **Preserve lifecycle ownership.** Use the systemd service, not raw Docker
+  start/stop commands. Docker's init is not the gated Python loader; readiness
+  must identify the child. Pre-readiness systemd startup deadlines also need
+  explicit renewal; watchdog notifications alone do not renew them.
+- **Use bounded evidence and stop.** A ready service plus a real generation
+  proves basic operation, not universal long-context correctness. Synthetic
+  retention tests are not general coding-quality certification, and one
+  successful run is not a reliability guarantee. Further benchmarking is
+  optional rather than an automatic expansion of this deployment's scope.
+
 ### Safety state and recovery
 
 - **Clean/absent → dirty:** acquire the exclusive lifecycle lock, require at
@@ -95,7 +177,7 @@ Keep existing task routing and normal OMP compaction settings unchanged.
   create/start**. Each run records a random ownership label and the full Docker
   container ID. One manually compacted start had no NVIDIA allocation warnings,
   but a later automatically compacted start logged them again. Host compaction
-  is not an established fix, and startup qualification remains open. This gate
+  is not an established fix; do not treat one warning-free start as proof. This gate
   allows approximately 96 GiB of observed startup allocation plus the 20 GiB
   runtime reserve; the roughly 25–28 GiB available **after** loading is not
   sufficient headroom to start another model.
@@ -171,16 +253,16 @@ working host, Docker metadata and pidfd support. The 112 GiB cgroup cap does not
 account for all driver allocations. The private state directory needs reliable
 local durable storage. Root/Docker administrators and the deployed source/model
 files are trusted; the guard is not a sandbox against a privileged operator.
-Two scheduler slots do **not** promise two simultaneous full-context requests:
-the shared 5 GiB pool still constrains aggregate tokens. Backend native context
-does not configure controller-side context/compaction policy.
+The single scheduler slot serializes active requests; the 5 GiB pool remains a
+fixed allocation, not an elastic memory limit. Backend native context does not
+configure controller-side context or compaction policy.
 
 Keep the original stopped baseline, image and source snapshot for rollback.
-This lifecycle implementation still needs CPU and on-host startup, pressure,
-crash/reboot recovery, authentication, coding and soak acceptance. A previously
-tested inference recipe is not proof that this supervisor is production-ready.
+The final one-slot rollout uses the existing launcher tests, supervised startup
+and one authenticated generation as its bounded acceptance check. This does not
+claim that every long-context workload or failure mode has been certified.
 
-Acceptance runs against the real service:
+Optional extended diagnostics, on an otherwise idle service:
 
 ```bash
 python3 /home/andre/local-ai/source/tools/validate_miaai_update.py \
@@ -192,7 +274,7 @@ python3 /home/andre/local-ai/source/tools/validate_miaai_update.py \
 
 This checks reasoning, tool-call JSON, concurrent isolation, growing-prefix
 recall and cache hits, server-tokenized near-full context, and over-limit
-rejection. An enabled flag or successful health check is not acceptance.
+rejection. These checks are useful evidence, not a guarantee for all workloads.
 
 ## Historical upstream NVIDIA TP1 recipe (2026-09-10)
 
@@ -459,6 +541,24 @@ present, and the pinned official checkpoint. The source/overlays must match
 the tested recipe. A rebuild can produce a different image ID and is **not**
 silently accepted as equivalent.
 
+The repository of record is
+[`andrebrait/qwen38-flash-next-on-dgx-spark`](https://github.com/andrebrait/qwen38-flash-next-on-dgx-spark),
+branch `main`. Install a reviewed source snapshot under
+`/home/andre/local-ai/releases/<commit>` and point `/home/andre/local-ai/source`
+at it while the service is stopped. Keep the previous snapshot for rollback.
+Download and verify the pinned weights with `bash scripts/download-weights.sh`.
+For a fresh host, transfer the reviewed image with `docker image save` /
+`docker image load` to preserve its image ID. `docker build -f Dockerfile.local-ai`
+can rebuild the recipe, but a different resulting image ID requires validation
+and an explicit pin update; do not bypass the launcher's identity check.
+
+Docker live restore must be disabled:
+`sudo docker info --format '{{.LiveRestoreEnabled}}'` must report `false`.
+Provision one cryptographically random, URL-safe key of at least 32 characters:
+`api.key` contains the raw key and `api.env` contains only `VLLM_API_KEY=<same-key>`.
+Transfer the raw key to the controller over authenticated SSH, directly into its
+private key file; do not print it in logs, chat, command arguments or git.
+
 The launcher checks the exact validated `config.json` SHA-256 before creating a
 container, including when `MODEL_HOST` points elsewhere. This pins the architecture
 and quantization configuration; it is not a fresh checksum of every weight shard.
@@ -633,7 +733,10 @@ PLE NVFP4 storage would require a new packed format, a gather/dequantization
 implementation, and model-quality validation. The current loader supports the
 FP8 checkpoint table; changing a quantization flag does not convert it.
 
-## Known limitations (from the recipe, confirmed relevant)
+## Historical recipe limitations
+
+The following limits concern the historical recipes below the deployment
+section. The current production launcher is pinned to 262,144 tokens.
 
 - One big model at a time — this uses most of the 128 GB pool.
 - 1M context is out of reach on one box; 500k with YaRN is the validated ceiling
