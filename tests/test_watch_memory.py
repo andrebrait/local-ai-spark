@@ -168,9 +168,13 @@ class LifecycleTest(unittest.TestCase):
                 return guard.PREFLIGHT_KIB
             if outcome == 'memory_error':
                 raise OSError('unreadable meminfo')
-            if outcome == 'pressure':
+            if outcome in ('pressure', 'notify_error'):
                 return guard.FLOOR_KIB - 1
             return guard.PREFLIGHT_KIB
+
+        def notify(message):
+            if outcome == 'notify_error' and message.startswith('STOPPING=1'):
+                raise OSError('notify socket unavailable')
 
         health = mock.Mock()
         health.result = (time.monotonic(), False)
@@ -185,7 +189,7 @@ class LifecycleTest(unittest.TestCase):
             return original_read(path, *args, **kwargs)
 
         with mock.patch.object(guard, 'config', return_value=('127.0.0.1', 8000, 'x' * 32)), \
-                mock.patch.object(guard, 'notify'), mock.patch.object(guard, 'docker', side_effect=docker), \
+                mock.patch.object(guard, 'notify', side_effect=notify), mock.patch.object(guard, 'docker', side_effect=docker), \
                 mock.patch.object(guard, 'available_kib', side_effect=available), \
                 mock.patch.object(guard, 'attach', side_effect=lambda *_: (os.pidfd_open(child.pid), child.pid)), \
                 mock.patch.object(guard, 'Health', return_value=health), \
@@ -239,12 +243,48 @@ class LifecycleTest(unittest.TestCase):
             send(fd, sig)
 
         with mock.patch.object(guard, 'STARTUP_LEASE_UNTIL', lease_until), \
+                mock.patch.object(guard, 'renew_startup_lease'), \
                 mock.patch.object(guard, 'send', side_effect=checked_send):
             self.run_supervisor('clean')
         self.assertEqual(released, [True])
 
     def test_oom_during_operator_stop_keeps_latch(self):
         self.run_supervisor('oom')
+
+    def test_shutdown_notification_failure_still_kills_and_latches(self):
+        self.run_supervisor('notify_error')
+
+    def test_waits_for_private_address_but_does_not_retry_busy_port(self):
+        with mock.patch.object(guard.socket, 'socket') as factory, \
+                mock.patch.object(guard, 'renew_startup_lease'), \
+                mock.patch.object(guard.time, 'sleep') as sleep:
+            bind = factory.return_value.__enter__.return_value.bind
+            bind.side_effect = [OSError(guard.errno.EADDRNOTAVAIL, 'not assigned'), None]
+            guard.wait_for_bind('100.64.255.60', 8000)
+            self.assertEqual(bind.call_count, 2)
+            sleep.reset_mock()
+            bind.side_effect = OSError(guard.errno.EADDRINUSE, 'occupied')
+            with self.assertRaises(guard.Refusal):
+                guard.wait_for_bind('100.64.255.60', 8000)
+            sleep.assert_not_called()
+
+    def test_missing_private_address_has_a_bounded_wait(self):
+        now = 0
+
+        def advance(_):
+            nonlocal now
+            now = 60
+
+        with mock.patch.object(guard.socket, 'socket') as factory, \
+                mock.patch.object(guard, 'renew_startup_lease'), \
+                mock.patch.object(guard.time, 'monotonic', side_effect=lambda: now), \
+                mock.patch.object(guard.time, 'sleep', side_effect=advance):
+            bind = factory.return_value.__enter__.return_value.bind
+            bind.side_effect = [OSError(guard.errno.EADDRNOTAVAIL, 'not assigned'),
+                                OSError(guard.errno.EADDRNOTAVAIL, 'not assigned'),
+                                AssertionError('Address wait exceeded its deadline')]
+            with self.assertRaises(guard.Refusal):
+                guard.wait_for_bind('100.64.255.60', 8000)
 
     def test_low_preflight_memory_never_creates_container(self):
         with mock.patch.object(guard, 'config', return_value=('127.0.0.1', 8000, 'x' * 32)), \

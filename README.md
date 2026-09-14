@@ -56,8 +56,9 @@ penalty 1.5; for deeper reasoning, set `reasoning_effort` to `xhigh`.
 `local-ai-memory.service` now owns the model lifecycle; it is **not** the old
 independent five-second watchdog. Docker and systemd both use **no automatic
 restart**. The production container is `qwen38-flash-two-slot`; the stopped
-original `qwen38-flash` baseline is never stopped, removed, or adopted by this
-supervisor. Do not launch legacy profiles alongside it.
+original baseline is never started, stopped, removed, or adopted by this
+supervisor. It only manages its own name and recorded ID. Do not launch legacy
+profiles alongside it.
 
 ```bash
 sudo systemctl start local-ai-memory.service
@@ -74,7 +75,47 @@ loading. The model has a 1,200-second readiness deadline after the load gate,
 plus bounded preflight/gating time. A separate timeout-bounded health thread
 cannot block the 250ms RAM loop. After readiness, 60 seconds without a healthy
 sample, a dead/stalled health thread, or a failed RAM read stops and latches.
-An occupied bind port is refused before creating the model.
+An occupied bind port is refused before creating the model. An unassigned private
+address is given up to 60 seconds to appear, covering normal Tailscale boot timing.
+
+### Controller model budgets
+
+OMP and its agents run on the controller, not on the Spark. No OMP source patch
+or second model instance is required. Keep `dgx-vllm/qwen3.8-flash-next` at its
+native 262,144-token context. In the controller's private `models.yml`, duplicate
+that provider as `dgx-worker`, preserving its endpoint, served model ID,
+authentication command, capabilities and compatibility settings. Change only
+the copied model's name and advertised budgets:
+
+```yaml
+name: Qwen3.8-Flash-Next (DGX worker 128 Ki)
+contextWindow: 131072
+maxTokens: 131072
+```
+
+Bind the existing generic task role in the controller's `config.yml`:
+
+```yaml
+modelRoles:
+  task: dgx-worker/qwen3.8-flash-next:medium
+```
+
+Merge that field into the existing role map; do not replace other roles or
+explicit cloud-agent pins. Other local agent definitions should also select
+`dgx-worker`, not the full-context entry. Refresh OMP's model catalog after adding
+the provider; new sessions load it at startup.
+
+These entries are client working budgets, not GPU reservations or server-side
+partitions. The server still owns one 5 GiB KV pool and two active slots. Two
+131,072-token working contexts total 262,144 tokens, below the measured 333,904-token
+pool capacity. Large actual requests near the native maximum should run without
+another large active request.
+
+Keep normal OMP compaction settings. With its default 15% reserve, the worker
+budget triggers compaction around 111k tokens; the earlier 96,000-token trial
+threshold was experimental, not a deployment requirement. The trial's 8,192-token
+output cap is not installed as a production limit. Native compaction and real
+worker routing still require end-to-end acceptance with these entries.
 
 ### Safety state and recovery
 
@@ -100,6 +141,9 @@ An occupied bind port is refused before creating the model.
   SIGTERM gets 30 seconds while RAM monitoring continues. Escalation to SIGKILL
   is a latched failure, not a clean stop. A clean stop retains the stopped
   container; the next start removes only that exact verified stopped instance.
+  Cancelling the pre-CUDA gate intentionally leaves a latch and requires an
+  explicit reset. A loader that cannot honor SIGTERM also remains latched after
+  forced termination; an operator-requested stop alone does not prove clean exit.
 - **Ready/dirty → latched:** pressure, timeout, model crash, forced teardown or
   monitoring failure. SIGKILL/power loss may leave `dirty` or `ready` instead;
   both are equally latched for the next start, including after reboot.
@@ -116,6 +160,12 @@ supervise the RAM loop during loading; the five-second watchdog covers readiness
 Neither mechanism retries. Do not increase `TimeoutStartSec` independently of
 the load gate, disable timeout/watchdog settings, or replace the notify unit
 with a process-created readiness mode.
+
+Teardown sends `STOPPING=1` and a bounded 120-second cleanup extension after
+signalling the owned init. On the target systemd, `STOPPING=1` disarms the watchdog
+after readiness; before readiness the explicit extension allows exit confirmation
+and state persistence to finish. Notification failure does not prevent the
+model's stop or persistent latch.
 
 After a failure, first stop the unit and investigate memory, host/driver logs,
 model logs and the saved state. Preserve evidence; **never delete the state file
@@ -433,6 +483,11 @@ Requirements: Linux with pidfds, Python 3.9+ with `pidfd_send_signal`, systemd
 present, and the pinned official checkpoint. The source/overlays must match
 the tested recipe. A rebuild can produce a different image ID and is **not**
 silently accepted as equivalent.
+
+The launcher checks the exact validated `config.json` SHA-256 before creating a
+container, including when `MODEL_HOST` points elsewhere. This pins the architecture
+and quantization configuration; it is not a fresh checksum of every weight shard.
+Weight files must remain the trusted, read-only checkpoint from installation.
 
 With the reviewed source already installed at `/home/andre/local-ai/source` and
 the existing credentials provisioned (same URL-safe 32+-character raw key):

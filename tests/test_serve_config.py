@@ -18,7 +18,7 @@ class ServeConfigTest(unittest.TestCase):
         directory = Path(self.temp.name)
         model = directory / 'checkpoint'
         model.mkdir()
-        (model / 'config.json').write_text('{"text_config":{"vocab_size":248320}}')
+        (model / 'config.json').write_bytes((ROOT / 'tests/fixtures/qwen38-nvfp4-config.json').read_bytes())
         self.api_env = directory / 'api.env'
         self.secret = 'test-key-' * 5
         self.api_env.write_text('VLLM_API_KEY=' + self.secret + '\n')
@@ -46,6 +46,15 @@ class ServeConfigTest(unittest.TestCase):
         self.assertIn('--enable-prompt-tokens-details', args)
         self.assertEqual(json.loads(args[args.index('--compilation-config') + 1])['cudagraph_capture_sizes'], [4, 8])
 
+    def test_different_checkpoint_geometry_is_refused(self):
+        path = Path(self.env['MODEL_HOST']) / 'config.json'
+        config = json.loads(path.read_text())
+        config['text_config']['num_hidden_layers'] += 1
+        path.write_text(json.dumps(config))
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('docker create', result.stdout)
+
     def test_auth_configuration_fails_closed(self):
         for content in ('WRONG_KEY_NAME=abcdef\n', 'VLLM_API_KEY=\n',
                         'VLLM_API_KEY=' + self.secret + '\nVLLM_API_KEY=\n',
@@ -56,6 +65,14 @@ class ServeConfigTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn('docker create', result.stdout)
                 self.assertNotIn(self.secret, result.stdout + result.stderr)
+
+    def test_credential_validation_does_not_ignore_trailing_file_content(self):
+        prefix = 'VLLM_API_KEY='
+        first_chunk = prefix + 'x' * (16384 - len(prefix) - 1) + '\n'
+        self.api_env.write_text(first_chunk + 'EXTRA_ENVIRONMENT=not-permitted\n')
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('docker create', result.stdout)
 
     def test_public_or_symlinked_secret_is_refused(self):
         self.api_env.chmod(0o644)

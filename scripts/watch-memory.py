@@ -5,6 +5,7 @@ Adapted from the tested guarded_start.py. Linux/systemd, local rootful Docker
 and Python 3.9+ with pidfd support are required. No GPU imports in this process.
 """
 import argparse
+import errno
 import fcntl
 import http.client
 import ipaddress
@@ -48,7 +49,10 @@ def private_file(path, owner=None):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != (ROOT_UID if owner is None else owner) or info.st_mode & 0o077:
             raise Refusal('Credential/state file must be root-owned and private')
-        return stream.read(16384)
+        content = stream.read(16385)
+        if len(content) > 16384:
+            raise Refusal('Credential/state file exceeds the supported size')
+        return content
 
 
 def config():
@@ -127,11 +131,15 @@ class State:
                 os.unlink(temporary)
 
 
-def docker(*args):
+def renew_startup_lease():
     global STARTUP_LEASE_UNTIL
     if STARTUP_LEASE_UNTIL is not None:
         notify('EXTEND_TIMEOUT_USEC=20000000')
         STARTUP_LEASE_UNTIL = time.monotonic() + 20
+
+
+def docker(*args):
+    renew_startup_lease()
     # Pin the local daemon: DOCKER_HOST/context/TLS environment cannot retarget stops.
     result = subprocess.run(['/usr/bin/docker', '--host', 'unix:///var/run/docker.sock', *args],
                             capture_output=True, text=True, timeout=15,
@@ -323,6 +331,22 @@ def reset(state):
     print('Latch clear; model remains stopped', flush=True)
 
 
+def wait_for_bind(host, port):
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind((host, port))
+            return
+        except OSError as error:
+            if error.errno != errno.EADDRNOTAVAIL:
+                raise Refusal('Configured bind address/port is unavailable') from error
+            if time.monotonic() >= deadline:
+                raise Refusal('Configured private address did not appear within 60 seconds') from error
+            renew_startup_lease()
+            time.sleep(0.25)
+
+
 def supervise(state, args):
     global STARTUP_LEASE_UNTIL
     host, port, key = config()
@@ -339,8 +363,7 @@ def supervise(state, args):
         docker('container', 'rm', verify_identity(old, previous))
     if available_kib() < PREFLIGHT_KIB:
         raise Refusal('Cold-load preflight requires at least 116 GiB MemAvailable')
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind((host, port))  # Existing listeners must not satisfy our readiness.
+    wait_for_bind(host, port)
     record = {'phase': 'dirty', 'run': uuid.uuid4().hex, 'image': IMAGE,
               'container_id': None, 'updated_at': time.time(), 'reason': 'load armed'}
     # Durable before create/start: SIGKILL, power loss, and reboot all leave an interlock.
@@ -376,6 +399,7 @@ def supervise(state, args):
         fd, pid = attach(inspect_id(cid), record)
         gate_deadline = time.monotonic() + 10
         while True:
+            renew_startup_lease()
             status = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines())
             if int(status['SigCgt'].strip(), 16) & (1 << (signal.SIGUSR1 - 1)):
                 break
@@ -443,10 +467,18 @@ def supervise(state, args):
         if health is not None:
             health.done.set()
         # Stop before any slow persistence/Docker operation, including exceptions.
+        if fd is not None and not clean:
+            send(fd, signal.SIGKILL)
+        STARTUP_LEASE_UNTIL = None
+        try:
+            # STOPPING disarms the ready-state watchdog. Before READY, systemd
+            # instead needs a bounded startup extension to finish persistence.
+            notify('STOPPING=1\nEXTEND_TIMEOUT_USEC=120000000')
+        except (OSError, Refusal):
+            clean = False
+            reason += '; shutdown notification failed'
         if fd is not None:
             try:
-                if not clean:
-                    send(fd, signal.SIGKILL)
                 if not exited(fd, 10000):
                     clean = False
                     raise Refusal('Model init did not exit after stop')

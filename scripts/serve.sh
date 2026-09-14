@@ -37,9 +37,12 @@ for file in ple_layer.py ple_mmap.py model_state.py mtp_draft_vocab.py \
 done
 DRAFT_VOCAB="$ROOT/src/miaai/draft_vocab_en_code_47k.txt"
 python3 - "$DRAFT_VOCAB" "$MODEL_HOST/config.json" <<'PYVOCAB'
-import json, sys
+import hashlib, json, sys
 from pathlib import Path
-config = json.loads(Path(sys.argv[2]).read_text())
+raw = Path(sys.argv[2]).read_bytes()
+if hashlib.sha256(raw).hexdigest() != 'deef67a61f3311faf051b23dc4192f442c7fee4f9cd2f38cbcbe4da55c763a80':
+    raise SystemExit('Checkpoint configuration differs from the validated NVIDIA NVFP4 profile')
+config = json.loads(raw)
 size = config.get('text_config', config)['vocab_size']
 ids = [int(line) for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
 if len(ids) != 47149 or len(ids) != len(set(ids)) or min(ids) < 0 or max(ids) >= size:
