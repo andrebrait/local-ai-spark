@@ -385,11 +385,6 @@ def supervise(state, args):
     previous = state.load()
     if previous is not None and previous['phase'] != 'clean':
         raise Refusal('Dirty-run latch is set; investigate and explicitly reset before starting')
-    old = named_container() if previous is None else target(previous)
-    if old is not None:
-        if previous is None or not stopped(old):
-            raise Refusal('Existing production container is live or lacks saved ownership')
-        docker('container', 'rm', verify_identity(old, previous))
     if available_kib() < PREFLIGHT_KIB:
         raise Refusal('Cold-load preflight requires at least 116 GiB MemAvailable')
     wait_for_bind(host, port)
@@ -397,6 +392,13 @@ def supervise(state, args):
     compact_host_memory()
     if available_kib() < PREFLIGHT_KIB:
         raise Refusal('Cold-load reserve was lost during host memory compaction')
+    if docker('info', '--format', '{{.LiveRestoreEnabled}}') != 'false':
+        raise Refusal('Docker live-restore must be disabled for supervised model ownership')
+    old = named_container() if previous is None else target(previous)
+    if old is not None:
+        if previous is None or not stopped(old):
+            raise Refusal('Existing production container is live or lacks saved ownership')
+        docker('container', 'rm', verify_identity(old, previous))
     record = {'phase': 'dirty', 'run': uuid.uuid4().hex, 'image': IMAGE,
               'container_id': None, 'updated_at': time.time(), 'reason': 'load armed'}
     # Durable before create/start: SIGKILL, power loss, and reboot all leave an interlock.
@@ -472,6 +474,7 @@ def supervise(state, args):
                 last_healthy = checked
                 if not ready:
                     record.update(phase='ready', reason='authenticated health 200', updated_at=time.time())
+                    notify('EXTEND_TIMEOUT_USEC=120000000')
                     state.save(record)
                     notify('READY=1\nSTATUS=Authenticated health 200; RAM guard active')
                     ready = True

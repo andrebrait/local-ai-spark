@@ -168,6 +168,8 @@ class LifecycleTest(unittest.TestCase):
                 self.assertEqual(saved['phase'], 'dirty')
                 self.container['Config']['Labels']['local-ai.run'] = saved['run']
                 return CID
+            if args[:2] == ('info', '--format'):
+                return 'false'
             if args[:2] == ('container', 'start'):
                 saved = self.state.load()
                 self.assertEqual(saved['container_id'], CID)
@@ -238,6 +240,10 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(any('EXTEND_TIMEOUT_USEC=120000000' in message
                             for message in self.notifications if message.startswith('STOPPING=1')))
         self.assertTrue(any(message.startswith('READY=1') for message in self.notifications))
+        ready_index = next(index for index, message in enumerate(self.notifications)
+                           if message.startswith('READY=1'))
+        self.assertTrue(any(message == 'EXTEND_TIMEOUT_USEC=120000000'
+                            for message in self.notifications[:ready_index]))
 
     def test_operator_stop_clears_dirty_state_only_after_confirmed_exit(self):
         self.run_supervisor('clean')
@@ -422,6 +428,19 @@ class LifecycleTest(unittest.TestCase):
             guard.stop_owned(self.state, self.record)
         self.assertIsNotNone(child.poll())
         self.assertEqual(self.state.load()['phase'], 'latched')
+
+    def test_live_restore_is_refused_before_state_or_container_creation(self):
+        with mock.patch.object(guard, 'config', return_value=('127.0.0.1', 8000, 'x' * 32)), \
+                mock.patch.object(guard, 'notify'), \
+                mock.patch.object(guard, 'available_kib', return_value=guard.PREFLIGHT_KIB), \
+                mock.patch.object(guard, 'wait_for_bind'), \
+                mock.patch.object(guard, 'compact_host_memory'), \
+                mock.patch.object(guard, 'docker', return_value='true') as docker:
+            with self.assertRaises(guard.Refusal):
+                guard.supervise(self.state, ['unused'])
+        docker.assert_called_once_with('info', '--format', '{{.LiveRestoreEnabled}}')
+        self.assertIsNone(self.state.load())
+
 
     def test_stop_post_preserves_existing_latched_reason(self):
         self.record.update(phase='latched', reason='memory reserve crossed')
