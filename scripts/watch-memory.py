@@ -235,6 +235,25 @@ def attach(container, record):
         raise
 
 
+def gate_handler_ready(init_pid, cid, proc_root=Path('/proc')):
+    try:
+        children_path = proc_root / str(init_pid) / 'task' / str(init_pid) / 'children'
+        children = children_path.read_text().split()
+        if len(children) != 1 or not children[0].isdecimal():
+            return False
+        child_pid = int(children[0])
+        status = dict(line.split(':', 1) for line in
+                      (proc_root / str(child_pid) / 'status').read_text().splitlines())
+        cgroup = (proc_root / str(child_pid) / 'cgroup').read_text()
+        caught = int(status['SigCgt'].strip(), 16)
+        return (int(status['PPid'].strip()) == init_pid
+                and bool(caught & (1 << (signal.SIGUSR1 - 1)))
+                and bool(re.search(r'(?:/|docker-)' + cid + r'(?:\.scope)?(?:/|\n|$)', cgroup))
+                and children_path.read_text().split() == children)
+    except (KeyError, OSError, ValueError):
+        return False
+
+
 def exited(fd, milliseconds=0):
     poll = select.poll()
     poll.register(fd, select.POLLIN)
@@ -414,11 +433,10 @@ def supervise(state, args):
         gate_deadline = time.monotonic() + 10
         while True:
             renew_startup_lease()
-            status = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines())
-            if int(status['SigCgt'].strip(), 16) & (1 << (signal.SIGUSR1 - 1)):
+            if gate_handler_ready(pid, cid):
                 break
             if exited(fd, 50) or stop_requested.is_set() or time.monotonic() >= gate_deadline:
-                raise Refusal('Init did not register its pre-CUDA release handler')
+                raise Refusal('Loader did not register its pre-CUDA release handler')
         # systemd's regular watchdog starts only at READY=1. Let its initial
         # 30-second startup grace expire while CUDA is gated; renewable five-
         # second startup deadlines then protect loading without false readiness.
@@ -463,12 +481,12 @@ def supervise(state, args):
                 break
             if stop_requested.is_set():
                 reason = 'operator stop'
-                notify('STOPPING=1\nSTATUS=Stopping verified model init')
+                notify('STOPPING=1\nSTATUS=Stopping verified model init\nEXTEND_TIMEOUT_USEC=120000000')
                 send(fd, signal.SIGTERM)
                 deadline = now + 30
                 # Continue RAM and pidfd monitoring during graceful teardown.
                 while not exited(fd, 250):
-                    notify('WATCHDOG=1')
+                    notify('WATCHDOG=1\nEXTEND_TIMEOUT_USEC=120000000')
                     if available_kib() < FLOOR_KIB or time.monotonic() >= deadline:
                         reason = 'forced stop: reserve crossed or graceful deadline expired'
                         break

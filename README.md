@@ -500,6 +500,9 @@ the existing credentials provisioned (same URL-safe 32+-character raw key):
 ```bash
 cd /home/andre/local-ai/source
 # Disable the old watchdog before replacing its unit. Keep the original baseline stopped.
+sudo docker stop --time 30 qwen38-flash
+# Must print false. Do not proceed while the baseline is running.
+sudo docker inspect --format '{{.State.Running}}' qwen38-flash
 sudo systemctl disable --now local-ai-memory.service
 sudo chown root:root /home/andre/local-ai/secrets/api.env /home/andre/local-ai/secrets/api.key
 sudo chmod 0600 /home/andre/local-ai/secrets/api.env /home/andre/local-ai/secrets/api.key

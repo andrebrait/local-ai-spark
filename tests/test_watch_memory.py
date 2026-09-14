@@ -126,6 +126,21 @@ class LifecycleTest(unittest.TestCase):
             guard.attach(self.container, self.record)
         self.assertIsNone(child.poll())
 
+    def test_gate_handler_belongs_to_verified_init_and_cgroup(self):
+        init_pid, child_pid = 123, 456
+        proc = self.state.directory / 'proc'
+        children = proc / str(init_pid) / 'task' / str(init_pid) / 'children'
+        children.parent.mkdir(parents=True)
+        children.write_text(f'{child_pid}\n')
+        child = proc / str(child_pid)
+        child.mkdir()
+        (child / 'status').write_text(
+            f'Name:\tpython3\nPPid:\t{init_pid}\nSigCgt:\t0000000000000200\n')
+        (child / 'cgroup').write_text(f'0::/system.slice/docker-{CID}.scope\n')
+        self.assertTrue(guard.gate_handler_ready(init_pid, CID, proc))
+        (child / 'cgroup').write_text('0::/system.slice/docker-unrelated.scope\n')
+        self.assertFalse(guard.gate_handler_ready(init_pid, CID, proc))
+
     def test_corrupt_or_public_state_fails_closed(self):
         self.state.save(self.record)
         self.state.path.chmod(0o644)
@@ -192,12 +207,6 @@ class LifecycleTest(unittest.TestCase):
                 handlers[signal.SIGTERM](signal.SIGTERM, None)
 
         health.thread.start.side_effect = start_health
-        original_read = Path.read_text
-
-        def read_path(path, *args, **kwargs):
-            if str(path) == f'/proc/{child.pid}/status':
-                return 'SigCgt:\t0000000000000200\n'
-            return original_read(path, *args, **kwargs)
 
         with mock.patch.object(guard, 'config', return_value=('127.0.0.1', 8000, 'x' * 32)), \
                 mock.patch.object(guard, 'notify', side_effect=notify), mock.patch.object(guard, 'docker', side_effect=docker), \
@@ -208,7 +217,7 @@ class LifecycleTest(unittest.TestCase):
                 mock.patch.object(guard, 'BOOT_TIME', time.monotonic() - 32), \
                 mock.patch.object(guard.signal, 'signal', side_effect=lambda sig, handler: handlers.update({sig: handler})), \
                 mock.patch.object(guard.socket, 'socket'), \
-                mock.patch.object(Path, 'read_text', read_path):
+                mock.patch.object(guard, 'gate_handler_ready', return_value=True):
             if outcome == 'memory_error':
                 with self.assertRaises(OSError):
                     guard.supervise(self.state, ['unused'])
@@ -226,10 +235,14 @@ class LifecycleTest(unittest.TestCase):
 
     def test_authenticated_health_marks_ready_before_clean_stop(self):
         self.run_supervisor('ready_clean')
+        self.assertTrue(any('EXTEND_TIMEOUT_USEC=120000000' in message
+                            for message in self.notifications if message.startswith('STOPPING=1')))
         self.assertTrue(any(message.startswith('READY=1') for message in self.notifications))
 
     def test_operator_stop_clears_dirty_state_only_after_confirmed_exit(self):
         self.run_supervisor('clean')
+        self.assertTrue(any('EXTEND_TIMEOUT_USEC=120000000' in message
+                            for message in self.notifications if message.startswith('STOPPING=1')))
 
     def test_clean_stop_waits_for_delayed_docker_exit_metadata(self):
         inspect = guard.inspect_id
