@@ -202,6 +202,7 @@ class LifecycleTest(unittest.TestCase):
         with mock.patch.object(guard, 'config', return_value=('127.0.0.1', 8000, 'x' * 32)), \
                 mock.patch.object(guard, 'notify', side_effect=notify), mock.patch.object(guard, 'docker', side_effect=docker), \
                 mock.patch.object(guard, 'available_kib', side_effect=available), \
+                mock.patch.object(guard, 'compact_host_memory'), \
                 mock.patch.object(guard, 'attach', side_effect=lambda *_: (os.pidfd_open(child.pid), child.pid)), \
                 mock.patch.object(guard, 'Health', return_value=health), \
                 mock.patch.object(guard, 'BOOT_TIME', time.monotonic() - 32), \
