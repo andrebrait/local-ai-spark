@@ -63,10 +63,10 @@ for mapping in 'ple_layer.py:models/qwen4_exp/nvidia/ple_layer.py' \
   MOUNTS+=(-v "$PATCH_DIR/${mapping%%:*}:$VP/${mapping#*:}:ro")
 done
 
-# Gate the lightweight private-namespace init before importing vLLM/CUDA. Only the
-# supervisor's verified pidfd can release it after durable state and monitoring.
+# Gate the lightweight loader behind Docker's init. The supervisor's verified
+# pidfd releases it; the init forwards termination across the gate/exec boundary.
 GATE='import os,signal,sys; signal.signal(signal.SIGUSR1,lambda *_:os.execvp("vllm",["vllm","serve",*sys.argv[1:]])); signal.pause()'
-ARGS=(--gpus all --restart no --pull never --memory 112g --memory-swap 112g
+ARGS=(--gpus all --init --restart no --pull never --memory 112g --memory-swap 112g
   --cap-drop ALL --security-opt no-new-privileges:true
   --network host --ipc private --shm-size 32g --ulimit memlock=-1:-1
   --env-file "$API_ENV_FILE" --entrypoint python3

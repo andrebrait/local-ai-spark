@@ -27,6 +27,7 @@ IMAGE = 'sha256:213e470219da6e21119f0a13a4df35f7e0d1f18ed2fb26e43f68c58965b30dfe
 NAME = 'qwen38-flash-two-slot'
 OWNER = 'qwen38-two-slot-v1'
 STATE_DIR = Path('/var/lib/local-ai-model')
+COMPACT_MEMORY = Path('/proc/sys/vm/compact_memory')
 FLOOR_KIB = 20 * 1024 * 1024
 # Cold loading consumed approximately 96 GiB in the two-slot trial. Preserve the
 # runtime floor before allocating; steady-state free RAM is not a load budget.
@@ -138,6 +139,14 @@ def renew_startup_lease():
         STARTUP_LEASE_UNTIL = time.monotonic() + 20
 
 
+def compact_host_memory():
+    renew_startup_lease()
+    try:
+        COMPACT_MEMORY.write_text('1\n')
+    except OSError as error:
+        raise Refusal('Host memory compaction failed') from error
+
+
 def docker(*args):
     renew_startup_lease()
     # Pin the local daemon: DOCKER_HOST/context/TLS environment cannot retarget stops.
@@ -178,7 +187,7 @@ def verify_identity(container, record):
             or labels.get('local-ai.run') != record['run']
             or container['Image'] != IMAGE or container['Config']['Image'] != IMAGE
             or host.get('PidMode', '') != '' or host['RestartPolicy']['Name'] != 'no'
-            or host.get('Privileged', False) or host.get('AutoRemove', False)):
+            or host.get('Init') is not True or host.get('Privileged', False) or host.get('AutoRemove', False)):
         raise Refusal('Refusing container with unverified ownership, image, namespace or restart policy')
     return cid
 
@@ -302,7 +311,7 @@ def stop_owned(state, record):
         finally:
             os.close(fd)
         confirm_stopped(container['Id'], record)
-    if forced or record['phase'] != 'clean':
+    if record['phase'] != 'latched' and (forced or record['phase'] != 'clean'):
         finish(state, record, False, True, 'supervisor_teardown; operator reset required')
 
 
@@ -365,6 +374,10 @@ def supervise(state, args):
     if available_kib() < PREFLIGHT_KIB:
         raise Refusal('Cold-load preflight requires at least 116 GiB MemAvailable')
     wait_for_bind(host, port)
+    notify('STATUS=Compacting host memory; not ready')
+    compact_host_memory()
+    if available_kib() < PREFLIGHT_KIB:
+        raise Refusal('Cold-load reserve was lost during host memory compaction')
     record = {'phase': 'dirty', 'run': uuid.uuid4().hex, 'image': IMAGE,
               'container_id': None, 'updated_at': time.time(), 'reason': 'load armed'}
     # Durable before create/start: SIGKILL, power loss, and reboot all leave an interlock.

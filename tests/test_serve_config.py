@@ -44,6 +44,7 @@ class ServeConfigTest(unittest.TestCase):
                            '--mamba-cache-mode': 'align'}.items():
             self.assertEqual(args[args.index(key) + 1], value)
         self.assertIn('--enable-prompt-tokens-details', args)
+        self.assertIn('--init', args)
         self.assertEqual(json.loads(args[args.index('--compilation-config') + 1])['cudagraph_capture_sizes'], [4, 8])
 
     def test_different_checkpoint_geometry_is_refused(self):

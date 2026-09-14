@@ -40,7 +40,7 @@ class LifecycleTest(unittest.TestCase):
             'Config': {'Image': guard.IMAGE, 'Entrypoint': ['python3'], 'Cmd': ['-c', GATE],
                        'Env': ['VLLM_API_KEY=' + 'x' * 32],
                        'Labels': {'local-ai.lifecycle': guard.OWNER, 'local-ai.run': self.record['run']}},
-            'HostConfig': {'PidMode': '', 'RestartPolicy': {'Name': 'no'}, 'Privileged': False},
+            'HostConfig': {'PidMode': '', 'RestartPolicy': {'Name': 'no'}, 'Privileged': False, 'Init': True},
             'State': {'Status': 'created', 'Running': False, 'Pid': 0},
         }
         self.notifications = []
@@ -100,7 +100,8 @@ class LifecycleTest(unittest.TestCase):
         for section, key, value in [('Config', 'Image', 'local-ai:latest'),
                                     ('HostConfig', 'PidMode', 'host'),
                                     ('HostConfig', 'PidMode', 'container:other'),
-                                    ('HostConfig', 'RestartPolicy', {'Name': 'always'})]:
+                                    ('HostConfig', 'RestartPolicy', {'Name': 'always'}),
+                                    ('HostConfig', 'Init', False)]:
             bad = copy.deepcopy(self.container)
             bad[section][key] = value
             variants.append(bad)
@@ -138,6 +139,7 @@ class LifecycleTest(unittest.TestCase):
     def run_supervisor(self, outcome):
         child = self.spawn()
         exists = False
+        runtime = False
         self.samples = 0
         handlers = {}
 
@@ -167,7 +169,7 @@ class LifecycleTest(unittest.TestCase):
 
         def available():
             self.samples += 1
-            if self.samples <= 3:
+            if not runtime:
                 return guard.PREFLIGHT_KIB
             if outcome == 'memory_error':
                 raise OSError('unreadable meminfo')
@@ -183,8 +185,13 @@ class LifecycleTest(unittest.TestCase):
         health = mock.Mock()
         health.result = (time.monotonic(), outcome == 'ready_clean')
         health.thread.is_alive.return_value = True
-        if outcome in ('clean', 'oom', 'ready_clean'):
-            health.thread.start.side_effect = lambda: handlers[signal.SIGTERM](signal.SIGTERM, None)
+        def start_health():
+            nonlocal runtime
+            runtime = True
+            if outcome in ('clean', 'oom', 'ready_clean'):
+                handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+        health.thread.start.side_effect = start_health
         original_read = Path.read_text
 
         def read_path(path, *args, **kwargs):
@@ -348,6 +355,31 @@ class LifecycleTest(unittest.TestCase):
             with self.assertRaises(guard.Refusal):
                 guard.wait_for_bind('100.64.255.60', 8000)
 
+    def test_host_compaction_writes_kernel_trigger(self):
+        trigger = self.state.directory / 'compact_memory'
+        trigger.write_text('0\n')
+        with mock.patch.object(guard, 'COMPACT_MEMORY', trigger), \
+                mock.patch.object(guard, 'renew_startup_lease'):
+            guard.compact_host_memory()
+        self.assertEqual(trigger.read_text(), '1\n')
+
+    def test_host_compaction_precedes_durable_state_and_docker(self):
+        def stop_after_compaction():
+            self.assertIsNone(self.state.load())
+            raise guard.Refusal('test boundary')
+
+        with mock.patch.object(guard, 'config', return_value=('127.0.0.1', 8000, 'x' * 32)), \
+                mock.patch.object(guard, 'notify'), \
+                mock.patch.object(guard, 'named_container', return_value=None), \
+                mock.patch.object(guard, 'available_kib', return_value=guard.PREFLIGHT_KIB), \
+                mock.patch.object(guard, 'wait_for_bind'), \
+                mock.patch.object(guard, 'compact_host_memory', side_effect=stop_after_compaction), \
+                mock.patch.object(guard, 'docker') as docker:
+            with self.assertRaises(guard.Refusal):
+                guard.supervise(self.state, ['unused'])
+            docker.assert_not_called()
+        self.assertIsNone(self.state.load())
+
     def test_low_preflight_memory_never_creates_container(self):
         with mock.patch.object(guard, 'config', return_value=('127.0.0.1', 8000, 'x' * 32)), \
                 mock.patch.object(guard, 'notify'), mock.patch.object(guard, 'named_container', return_value=None), \
@@ -376,6 +408,15 @@ class LifecycleTest(unittest.TestCase):
             guard.stop_owned(self.state, self.record)
         self.assertIsNotNone(child.poll())
         self.assertEqual(self.state.load()['phase'], 'latched')
+
+    def test_stop_post_preserves_existing_latched_reason(self):
+        self.record.update(phase='latched', reason='memory reserve crossed')
+        self.state.save(self.record)
+        with mock.patch.object(guard, 'target', return_value=self.container):
+            guard.stop_owned(self.state, self.record)
+        saved = self.state.load()
+        self.assertEqual(saved['phase'], 'latched')
+        self.assertEqual(saved['reason'], 'memory reserve crossed')
 
     def test_named_replacement_cannot_hide_recorded_live_identity(self):
         replacement = copy.deepcopy(self.container)

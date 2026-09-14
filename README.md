@@ -119,17 +119,22 @@ worker routing still require end-to-end acceptance with these entries.
 
 ### Safety state and recovery
 
-- **Clean/absent → dirty:** require at least **116 GiB MemAvailable**, acquire the
-  exclusive lifecycle lock, and atomically write/fsync the root-private
-  `/var/lib/local-ai-model/state.json` and its directory **before create/start**.
-  Each run records a random ownership label and the full Docker container ID.
-  This cold-load gate allows approximately 96 GiB of observed startup allocation
-  plus the 20 GiB runtime reserve; the roughly 25–28 GiB available **after**
-  loading is not sufficient headroom to start another model.
-- **Dirty → gated load:** create with `--restart no`, immutable image, private
-  PID namespace, and a lightweight init waiting in a SIGUSR1 handler gate. Verify
-  full ID, run/owner labels, image, restart policy, cgroup and PID namespace;
-  acquire/recheck a pidfd and confirm the handler before releasing vLLM/CUDA.
+- **Clean/absent → dirty:** acquire the exclusive lifecycle lock, require at
+  least **116 GiB MemAvailable**, trigger Linux host-memory compaction, and
+  require the same reserve again. Only then atomically write/fsync the
+  root-private `/var/lib/local-ai-model/state.json` and its directory **before
+  create/start**. Each run records a random ownership label and the full Docker
+  container ID. The compacted-start experiment eliminated the reproducible
+  NVIDIA allocation warnings seen in the two preceding cold loads. This gate
+  allows approximately 96 GiB of observed startup allocation plus the 20 GiB
+  runtime reserve; the roughly 25–28 GiB available **after** loading is not
+  sufficient headroom to start another model.
+- **Dirty → gated load:** create with `--restart no`, immutable image, a private
+  PID namespace, Docker's minimal init, and a lightweight loader waiting behind
+  a SIGUSR1 gate. Verify full ID, run/owner labels, image, init, restart policy,
+  cgroup and PID namespace; acquire/recheck the init pidfd and confirm its signal
+  handler before releasing vLLM/CUDA. The init forwards termination across the
+  loader's gate/exec boundary.
 - **Dirty → ready:** authenticated health 200; dirty protection remains armed.
   The RAM loop samples every 250ms and sends SIGKILL through the verified pidfd
   if available RAM falls below **20 GiB** or monitoring fails. There are no
