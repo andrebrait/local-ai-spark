@@ -55,13 +55,13 @@
 
   <p class="dim">Card: the earlier September 6 benchmark. Current measurements follow.</p>
 
-  <h2>Default NVIDIA TP1 recipe (2026-09-10)</h2>
-  <p><code>scripts/serve.sh</code> runs the official NVIDIA checkpoint with pinned
-    vLLM nightly <code>8a728663</code>, staged disk PLE gather, MiaAI's 47,149-token
-    MTP3 draft vocabulary, BF16 recurrent state, FP8 KV, six sequence slots,
-    4,096-token prefill chunks, 262,144-token context, and decode CUDA graphs.
-    Prefix caching and DFlash are disabled. The default 30 GiB host reserve
-    derives <code>GMU=0.7535</code> on this host.</p>
+  <h2>Historical six-slot benchmark recipe (2026-09-10)</h2>
+  <p>These measurements used an earlier six-slot NVIDIA TP1 recipe. The current
+    production launcher keeps the same official checkpoint, pinned vLLM nightly
+    <code>8a728663</code>, staged disk PLE gather, MiaAI draft vocabulary, FP8 KV,
+    4,096-token prefill chunks, and native 262,144-token context. It now uses two
+    active slots, a fixed 5 GiB KV pool, MTP3, authenticated Tailscale binding,
+    prefix caching, and a systemd-owned fail-closed lifecycle.</p>
   <table>
     <tr><th>Workload</th><th>Speed</th><th>First token</th></tr>
     <tr><td>Prose, one request</td><td><b>36.83 output tok/s</b></td><td>0.236 s</td></tr>
@@ -118,25 +118,24 @@
   memory. PLE is part of the target model and remains necessary with any speculative
   method. NVFP4 PLE storage is not supported by the current loader.</p>
 
-  <h2>Serving config</h2>
-  <pre><code>scripts/serve.sh          # NVIDIA TP1 · native 262,144 · 6 seqs
-# MTP=3 · 47,149-token draft vocabulary · BF16 recurrent state
-# FP8 KV · 4,096-token chunks · staged PLE · HOST_RESERVE_GIB=30
-# decode CUDA graph widths: [4,8,12,16,20,24]
-scripts/serve-500k.sh     # legacy YaRN 524,288 · hybrid · 1 seq</code></pre>
+  <h2>Production serving config</h2>
+  <pre><code>sudo systemctl start local-ai-memory.service
+# native 262,144 · 2 active slots · shared 5 GiB FP8 KV
+# MTP3 · 47,149-token draft vocabulary · BF16 recurrent state
+# 4,096-token chunks · staged PLE · prefix caching
+# authenticated Tailscale endpoint: 100.64.255.60:8000</code></pre>
 
   <h2>Serving it to other machines</h2>
-  <p><code>scripts/serve.sh</code> publishes an unauthenticated API on all interfaces.
-  The older <code>scripts/serve-public.sh</code> keeps the legacy RadixArk profile on loopback and fronts it with a small
-  gateway: bearer auth on <code>/v1/*</code> and <code>/metrics</code>, 404 on everything
-  else, streaming passed through untouched. Keys live in the gateway, so rotating one
-  takes effect on the next request instead of restarting a container that loads
-  ~76 GiB of weights.</p>
-  <pre><code>scripts/serve.sh          # default NVIDIA TP1 service on :18300
-scripts/serve-public.sh   # legacy container on 127.0.0.1:18300, gateway on :8080</code></pre>
-  <p>The admin dashboard it serves at <code>/</code> shows upstream health and the served
-  model, edits the advertised API base URL, and creates, reveals, rotates and revokes keys
-  with per-key request counts.</p>
+  <p><code>scripts/serve.sh</code> is the fixed production launcher owned by
+    <code>local-ai-memory.service</code>. It binds only to the configured
+    Tailscale IPv4 address and requires the bearer key on inference, health,
+    tokenizer, and metrics routes. Docker and systemd do not automatically
+    restart the model after a fault; the persistent latch requires an explicit
+    operator reset after investigation.</p>
+  <pre><code>curl -H "Authorization: Bearer $VLLM_API_KEY" \
+  http://100.64.255.60:8000/v1/models
+
+# See README.md for installation, status, stop, latch reset, and rollback.</code></pre>
 
   <p>Full write-up — setup, benchmarks, and memory-reduction options —
   is in the repository README.</p>

@@ -44,7 +44,7 @@ class Refusal(RuntimeError):
 
 
 def private_file(path, owner=None):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != (ROOT_UID if owner is None else owner) or info.st_mode & 0o077:
@@ -336,6 +336,7 @@ def wait_for_bind(host, port):
     while True:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind((host, port))
             return
         except OSError as error:

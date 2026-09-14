@@ -5,6 +5,7 @@ No model, CUDA, Docker daemon, systemd, network listener, or root required.
 import copy
 import importlib.util
 import json
+import http.server
 import os
 from pathlib import Path
 import signal
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import unittest
 from unittest import mock
 
@@ -41,6 +43,7 @@ class LifecycleTest(unittest.TestCase):
             'HostConfig': {'PidMode': '', 'RestartPolicy': {'Name': 'no'}, 'Privileged': False},
             'State': {'Status': 'created', 'Running': False, 'Pid': 0},
         }
+        self.notifications = []
         self.child = None
 
     def spawn(self):
@@ -173,13 +176,14 @@ class LifecycleTest(unittest.TestCase):
             return guard.PREFLIGHT_KIB
 
         def notify(message):
+            self.notifications.append(message)
             if outcome == 'notify_error' and message.startswith('STOPPING=1'):
                 raise OSError('notify socket unavailable')
 
         health = mock.Mock()
-        health.result = (time.monotonic(), False)
+        health.result = (time.monotonic(), outcome == 'ready_clean')
         health.thread.is_alive.return_value = True
-        if outcome in ('clean', 'oom'):
+        if outcome in ('clean', 'oom', 'ready_clean'):
             health.thread.start.side_effect = lambda: handlers[signal.SIGTERM](signal.SIGTERM, None)
         original_read = Path.read_text
 
@@ -202,15 +206,19 @@ class LifecycleTest(unittest.TestCase):
                     guard.supervise(self.state, ['unused'])
             else:
                 result = guard.supervise(self.state, ['unused'])
-                self.assertEqual(result, 0 if outcome == 'clean' else 1)
+                self.assertEqual(result, 0 if outcome in ('clean', 'ready_clean') else 1)
         self.assertIsNotNone(child.poll())
-        self.assertEqual(self.state.load()['phase'], 'clean' if outcome == 'clean' else 'latched')
+        self.assertEqual(self.state.load()['phase'], 'clean' if outcome in ('clean', 'ready_clean') else 'latched')
 
     def test_pressure_kills_owned_init_and_persists_latch(self):
         self.run_supervisor('pressure')
 
     def test_monitor_failure_kills_owned_init_and_persists_latch(self):
         self.run_supervisor('memory_error')
+
+    def test_authenticated_health_marks_ready_before_clean_stop(self):
+        self.run_supervisor('ready_clean')
+        self.assertTrue(any(message.startswith('READY=1') for message in self.notifications))
 
     def test_operator_stop_clears_dirty_state_only_after_confirmed_exit(self):
         self.run_supervisor('clean')
@@ -258,15 +266,69 @@ class LifecycleTest(unittest.TestCase):
         with mock.patch.object(guard.socket, 'socket') as factory, \
                 mock.patch.object(guard, 'renew_startup_lease'), \
                 mock.patch.object(guard.time, 'sleep') as sleep:
-            bind = factory.return_value.__enter__.return_value.bind
+            probe = factory.return_value.__enter__.return_value
+            bind = probe.bind
             bind.side_effect = [OSError(guard.errno.EADDRNOTAVAIL, 'not assigned'), None]
             guard.wait_for_bind('100.64.255.60', 8000)
             self.assertEqual(bind.call_count, 2)
+            probe.setsockopt.assert_called_with(guard.socket.SOL_SOCKET, guard.socket.SO_REUSEADDR, 1)
             sleep.reset_mock()
             bind.side_effect = OSError(guard.errno.EADDRINUSE, 'occupied')
             with self.assertRaises(guard.Refusal):
                 guard.wait_for_bind('100.64.255.60', 8000)
             sleep.assert_not_called()
+
+    def test_private_file_refuses_fifo_without_blocking(self):
+        fifo = self.state.directory / 'credential.fifo'
+        os.mkfifo(fifo, 0o600)
+        started = time.monotonic()
+        with self.assertRaises(guard.Refusal):
+            guard.private_file(fifo, os.geteuid())
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_health_requires_bearer_key_and_http_200(self):
+        requests = []
+        received = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            status = 200
+
+            def do_GET(self):
+                requests.append((self.path, self.headers.get('Authorization')))
+                self.send_response(self.status)
+                self.end_headers()
+                received.set()
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            healthy = guard.Health('127.0.0.1', server.server_port, 'correct-key')
+            healthy.thread.start()
+            self.assertTrue(received.wait(2))
+            deadline = time.monotonic() + 2
+            while not healthy.result[1] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(healthy.result[1])
+            self.assertEqual(requests[-1], ('/health', 'Bearer correct-key'))
+            healthy.done.set()
+            healthy.thread.join(2)
+
+            received.clear()
+            Handler.status = 401
+            rejected = guard.Health('127.0.0.1', server.server_port, 'wrong-key')
+            rejected.thread.start()
+            self.assertTrue(received.wait(2))
+            self.assertFalse(rejected.result[1])
+            rejected.done.set()
+            rejected.thread.join(2)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
 
     def test_missing_private_address_has_a_bounded_wait(self):
         now = 0
