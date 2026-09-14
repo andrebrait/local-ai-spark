@@ -53,14 +53,14 @@
 
   <img class="card" src="assets/social-card.png?v=20260906-tp1" alt="Qwen3.8-Flash-Next on a single NVIDIA DGX Spark">
 
-  <p class="dim">Card: the earlier September 6 benchmark. Current measurements follow.</p>
+  <p class="dim">Card: the earlier September 6 benchmark. Historical measurements follow; the current operating configuration is below.</p>
 
   <h2>Historical six-slot benchmark recipe (2026-09-10)</h2>
   <p>These measurements used an earlier six-slot NVIDIA TP1 recipe. The current
     production launcher keeps the same official checkpoint, pinned vLLM nightly
     <code>8a728663</code>, staged disk PLE gather, MiaAI draft vocabulary, FP8 KV,
-    4,096-token prefill chunks, and native 262,144-token context. It now uses two
-    active slots, a fixed 5 GiB KV pool, MTP3, authenticated Tailscale binding,
+    4,096-token prefill chunks, and native 262,144-token context. It now uses one
+    active slot, a fixed 5 GiB KV pool, MTP3, authenticated Tailscale binding,
     prefix caching, and a systemd-owned fail-closed lifecycle.</p>
   <table>
     <tr><th>Workload</th><th>Speed</th><th>First token</th></tr>
@@ -120,7 +120,7 @@
 
   <h2>Production serving config</h2>
   <pre><code>sudo systemctl start local-ai-memory.service
-# native 262,144 · 2 active slots · shared 5 GiB FP8 KV
+# native 262,144 · 1 active slot · fixed 5 GiB FP8 KV
 # MTP3 · 47,149-token draft vocabulary · BF16 recurrent state
 # 4,096-token chunks · staged PLE · prefix caching
 # authenticated Tailscale endpoint: 100.64.255.60:8000</code></pre>
@@ -137,10 +137,11 @@
 
 # See README.md for installation, status, stop, latch reset, and rollback.</code></pre>
 
-  <p>Full write-up — setup, benchmarks, and memory-reduction options —
-  is in the repository README.</p>
+  <p>Full write-up — installation, controller configuration, operational lessons,
+  historical benchmarks, and memory-reduction options — is in the
+  <a href="https://github.com/andrebrait/qwen38-flash-next-on-dgx-spark/blob/main/README.md">repository README</a>.</p>
 
-  <a class="btn" href="https://github.com/madeye/qwen38-flash-next-on-dgx-spark">View on GitHub</a>
+  <a class="btn" href="https://github.com/andrebrait/qwen38-flash-next-on-dgx-spark">View on GitHub</a>
 </main>
 </body>
 </html>
