@@ -253,6 +253,9 @@ working host, Docker metadata and pidfd support. The 112 GiB cgroup cap does not
 account for all driver allocations. The private state directory needs reliable
 local durable storage. Root/Docker administrators and the deployed source/model
 files are trusted; the guard is not a sandbox against a privileged operator.
+Cancellation can arrive after the final pre-load admission check; the supervisor
+then stops the verified init using bounded teardown and RAM monitoring. This is
+not an atomic guarantee that CUDA never begins after a stop signal.
 The single scheduler slot serializes active requests; the 5 GiB pool remains a
 fixed allocation, not an elastic memory limit. Backend native context does not
 configure controller-side context or compaction policy.
@@ -262,10 +265,36 @@ The final one-slot rollout uses the existing launcher tests, supervised startup
 and one authenticated generation as its bounded acceptance check. This does not
 claim that every long-context workload or failure mode has been certified.
 
+To roll back, choose a preserved, reviewed **supervised** release from the last
+deployment receipt. Its matching pinned image must still be installed (or loaded
+from the reviewed image archive). Keep the current credentials; do not restore a
+retired key from an older snapshot.
+
+```bash
+# Set this to the trusted release path recorded before the deployment.
+PREVIOUS_RELEASE="/home/andre/local-ai/releases/REPLACE_WITH_REVIEWED_COMMIT"
+sudo systemctl stop local-ai-memory.service
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py status
+# Continue only if the state is clean and the recorded container is stopped.
+# Otherwise use the latch-recovery procedure above; do not bypass it.
+sudo test -d "$PREVIOUS_RELEASE" &&
+sudo ln -sfn "$PREVIOUS_RELEASE" /home/andre/local-ai/source &&
+sudo install -o root -g root -m 0644 \
+  "$PREVIOUS_RELEASE/scripts/local-ai-memory.service" \
+  /etc/systemd/system/local-ai-memory.service &&
+sudo systemctl daemon-reload &&
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py check-config &&
+sudo systemctl start local-ai-memory.service &&
+sudo systemctl status --no-pager local-ai-memory.service
+```
+
+Confirm authenticated access with the current key after rollback. Do not use
+this procedure to restart an unsupervised legacy launcher or baseline container.
+
 Optional extended diagnostics, on an otherwise idle service:
 
 ```bash
-python3 /home/andre/local-ai/source/tools/validate_miaai_update.py \
+sudo python3 /home/andre/local-ai/source/tools/validate_miaai_update.py \
   --base http://100.64.255.60:8000 \
   --allow-tailscale-http \
   --api-key-file /home/andre/local-ai/secrets/api.key \
@@ -592,6 +621,9 @@ No key is put on a command line, in the unit, or in supervisor logs. Rootless
 using private fixture credentials/weights, but is not a startup or safety test.
 Do not copy benchmark recipe environments verbatim: their empty API key is
 intentionally rejected by this production launcher.
+If configuration validation reports `AddressValueError`, check `BIND_HOST`:
+it must be an IPv4 loopback address or an address in `100.64.0.0/10`, not an
+IPv6 address or a hostname. Invalid values fail closed before CUDA starts.
 
 `scripts/serve-legacy.sh` defaults: native 262,144-token context, MTP=3 speculative tokens,
 `--enable-prefix-caching`, deterministic exact QSA top-k, 4 concurrent sequences,
