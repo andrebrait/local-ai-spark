@@ -11,19 +11,307 @@ at `d83f10c`, with its Apache-licensed vLLM patch set vendored under
 [blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX),
 remains available through the explicit legacy launchers.
 
-## Default NVIDIA TP1 recipe (2026-09-10)
+## Local AI deployment (this fork)
 
-`bash scripts/serve.sh` starts the validated single-Spark NVIDIA recipe against
-the official `nvidia/Qwen3.8-Flash-Next-NVFP4` checkpoint at
-`/var/tmp/models/Qwen3.8-Flash-Next-NVFP4-nvidia`. It uses the pinned vLLM
-nightly `8a728663`, staged disk PLE gather, MiaAI's 47,149-token MTP3 draft vocabulary,
-six sequences, 4,096-token prefill chunks, FP8 KV, 262,144 context tokens,
-GPU memory utilization derived from `HOST_RESERVE_GIB=30` (unless `GMU` is
-explicitly set), decode-only CUDA graphs, and disabled prefix caching. GDN
-recurrent state uses BF16. The service uses Docker's `unless-stopped` policy,
-so it returns when the Docker daemon restarts.
+The deployment uses `Dockerfile.local-ai`, not the historical `Dockerfile`.
+It pins the arm64 vLLM `8a728663` image and the official NVIDIA checkpoint
+revision `fc694b54fb0174e0913e6adf86691ef85a4ead47`. The checkpoint is unchanged:
+NVFP4 routed experts, BF16 side layers, and FP8 n-gram/MTP tensors.
+CI builds and validates this image with read-only permissions; it does not publish
+packages or deploy changes to the node.
 
-### Current live performance
+`scripts/serve.sh` uses staged NVMe n-gram reads, MTP3 with the 47,149-token
+draft vocabulary, **one scheduler slot**, 4,096-token prefill chunks, a fixed
+**5,368,709,120-byte (5 GiB) FP8 E4M3 KV pool**, BF16 recurrent state, decode
+graphs `[4,8]`, and the native **262,144-token input-plus-output limit**.
+The image adds version-checked prefix-cache corrections, including explicit
+Qwen MTP group identification. Prefix reuse is enabled with aligned Mamba state.
+Prompt-token cache details are enabled. The immutable tested image is
+`sha256:213e470219da6e21119f0a13a4df35f7e0d1f18ed2fb26e43f68c58965b30dfe`.
+The launcher rejects moving images and allocation/profile overrides; it never
+falls back to utilization-derived/unbounded KV sizing. GMU stays at `0.7533`,
+but the explicit byte budget, not GMU, sizes KV.
+
+Thinking and preserved thinking are enabled at medium effort. Defaults are
+temperature 1.0, top-p 0.95, top-k 20, min-p 0, presence penalty 0, and repetition
+penalty 1.0. The model's generation configuration retains its official EOS tokens.
+Clients may override sampling and `chat_template_kwargs` per request. For
+non-thinking mode, Qwen recommends temperature 0.7, top-p 0.8 and presence
+penalty 1.5; for deeper reasoning, set `reasoning_effort` to `xhigh`.
+
+### Access and operations
+
+- API base: `http://100.64.255.60:8000/v1` over Tailscale.
+- Served model: `qwen3.8-flash-next`.
+- API key: `/home/andre/local-ai/secrets/api.key` on the Spark; never committed.
+- Launcher credential: `/home/andre/local-ai/secrets/api.env`, containing
+  `VLLM_API_KEY=` followed by that same raw key. Both files are root-owned, mode
+  0600; the environment file must be a regular file, not a symlink.
+- All HTTP routes require the bearer key, including health, metrics and tokenizer
+  diagnostics. Only CORS `OPTIONS` requests bypass authentication.
+- Source: `/home/andre/local-ai/source`; model and cache are sibling directories.
+- Evidence: `/home/andre/local-ai/evidence`, including checksums, package audit,
+  runtime identities, authentication checks and serving acceptance.
+
+`local-ai-memory.service` now owns the model lifecycle; it is **not** the old
+independent five-second watchdog. Docker and systemd both use **no automatic
+restart**. The production container is `qwen38-flash-two-slot`; the stopped
+original baseline is never started, stopped, removed, or adopted by this
+supervisor. It only manages its own name and recorded ID. Do not launch legacy
+profiles alongside it.
+
+```bash
+sudo systemctl start local-ai-memory.service
+sudo systemctl status --no-pager local-ai-memory.service
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py status
+sudo journalctl -u local-ai-memory.service -n 100 --no-pager
+sudo docker logs --follow qwen38-flash-two-slot
+sudo systemctl stop local-ai-memory.service
+```
+
+`systemctl start` succeeds only after an authenticated `/health` response of
+**200** (`Type=notify`), not container creation. It remains `activating` while
+loading. The model has a 1,200-second readiness deadline after the load gate,
+plus bounded preflight/gating time. A separate timeout-bounded health thread
+cannot block the 250ms RAM loop. After readiness, 60 seconds without a healthy
+sample, a dead/stalled health thread, or a failed RAM read stops and latches.
+An occupied bind port is refused before creating the model. An unassigned private
+address is given up to 60 seconds to appear, covering normal Tailscale boot timing.
+
+### Controller model selection
+
+OMP and its agents run on the controller, not on the Spark. Use
+`dgx-vllm/qwen3.8-flash-next` with its native **262,144-token context**.
+The server processes one sequence at a time; additional requests queue.
+No smaller worker alias, task-role change, or OMP compaction patch is required.
+Keep existing task routing and normal OMP compaction settings unchanged.
+
+Merge this credential-free entry into the controller's `~/.omp/agent/models.yml`
+without replacing its other providers:
+
+```yaml
+providers:
+  dgx-vllm:
+    baseUrl: http://100.64.255.60:8000/v1
+    api: openai-completions
+    apiKey: '!cat /root/.omp/agent/secrets/dgx-vllm.key'
+    authHeader: true
+    models:
+    - id: qwen3.8-flash-next
+      name: Qwen3.8-Flash-Next (DGX Spark NVFP4)
+      reasoning: true
+      thinking:
+        mode: effort
+        efforts: [low, medium, xhigh]
+        defaultLevel: medium
+        requiresEffort: false
+      input: [text, image]
+      supportsTools: true
+      contextWindow: 262144
+      maxTokens: 262144
+      omitMaxOutputTokens: true
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
+      compat:
+        maxTokensField: max_tokens
+        supportsStore: false
+        supportsDeveloperRole: false
+        thinkingFormat: qwen-chat-template
+        qwenTemplateReasoningEffort: true
+        reasoningContentField: reasoning
+        replayReasoningContent: true
+        qwenPreserveThinking: true
+        streamFirstEventTimeoutMs: 0
+        streamIdleTimeoutMs: 1800000
+```
+
+Refresh the model catalog or start a new OMP session after changing this entry
+or rotating its credential. Existing sessions may retain resolved model metadata.
+
+### Lessons learned (2026-09-14)
+
+- **Keep the operating target small.** The final choice is one active sequence
+  and the native 262,144-token input-plus-output limit. Two-worker context
+  experiments and custom OMP policies are not prerequisites for using this node.
+  The container retains its historical `qwen38-flash-two-slot` name solely for
+  lifecycle identity; the launcher now allows only one active sequence.
+- **MoE sparsity does not remove weight-storage costs.** What makes this
+  checkpoint fit is the staged, disk-backed 47.68 GiB PLE lookup table, not
+  arbitrary expert streaming. Keep the official mixed-precision checkpoint
+  unchanged and keep KV allocation explicit.
+- **Separate failed allocation attempts from fatal failures.** NVIDIA
+  `NV_ERR_NO_MEMORY` messages occurred during starts that subsequently reached
+  readiness. That is not proof of a harmless cause, nor proof of a host OOM.
+  Correlate them with CUDA errors, Xids, host OOM kills, free memory and service
+  health. The [driver logging site](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/580.173.02/src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c#L1359)
+  returns the failed allocation status; PyTorch also distinguishes
+  [allocation retries from thrown OOMs](https://docs.pytorch.org/docs/2.14/generated/torch.cuda.memory.memory_stats.html).
+  A manually compacted clean start did not establish a repeatable fix.
+- **Do not infer causality from adjacent events.** The worker that omitted
+  `read_fixture` had not compacted. A peer began compaction around the same time.
+  A different run passing with synchronous soft compaction did not demonstrate
+  an OMP asynchronous-compaction bug. A later offline reconstruction included
+  the tool and matched the recorded prompts, but was not the original wire
+  capture. No per-agent compaction patch is part of this deployment.
+- **Keep diagnostics credential-safe.** Runtime model metadata can contain
+  resolved authorization headers even when configuration uses a key-file
+  command. Redact before logging, keep diagnostic directories mode 0700 and
+  secret files mode 0600, and rotate any disclosed key. Keep `api.env`, `api.key`
+  and the controller's `/root/.omp/agent/secrets/dgx-vllm.key` synchronized.
+  Verify the replacement key succeeds and the retired key returns HTTP 401.
+- **Preserve lifecycle ownership.** Use the systemd service, not raw Docker
+  start/stop commands. Docker's init is not the gated Python loader; readiness
+  must identify the child. Pre-readiness systemd startup deadlines also need
+  explicit renewal; watchdog notifications alone do not renew them.
+- **Use bounded evidence and stop.** A ready service plus a real generation
+  proves basic operation, not universal long-context correctness. Synthetic
+  retention tests are not general coding-quality certification, and one
+  successful run is not a reliability guarantee. Further benchmarking is
+  optional rather than an automatic expansion of this deployment's scope.
+
+### Safety state and recovery
+
+- **Clean/absent → dirty:** acquire the exclusive lifecycle lock, require at
+  least **116 GiB MemAvailable**, trigger Linux host-memory compaction, and
+  require the same reserve again. Only then atomically write/fsync the
+  root-private `/var/lib/local-ai-model/state.json` and its directory **before
+  create/start**. Each run records a random ownership label and the full Docker
+  container ID. One manually compacted start had no NVIDIA allocation warnings,
+  but a later automatically compacted start logged them again. Host compaction
+  is not an established fix; do not treat one warning-free start as proof. This gate
+  allows approximately 96 GiB of observed startup allocation plus the 20 GiB
+  runtime reserve; the roughly 25–28 GiB available **after** loading is not
+  sufficient headroom to start another model.
+- **Dirty → gated load:** create with `--restart no`, immutable image, a private
+  PID namespace, Docker's minimal init, and a lightweight loader waiting behind
+  a SIGUSR1 gate. Verify full ID, run/owner labels, image, init, restart policy,
+  cgroup and PID namespace; acquire/recheck the init pidfd and confirm its signal
+  handler before releasing vLLM/CUDA. The init forwards termination across the
+  loader's gate/exec boundary.
+- **Dirty → ready:** authenticated health 200; dirty protection remains armed.
+  The RAM loop samples every 250ms and sends SIGKILL through the verified pidfd
+  if available RAM falls below **20 GiB** or monitoring fails. There are no
+  Docker commands or HTTP requests in that pressure-stop path. Killing the
+  private-namespace init terminates its descendants.
+- **Ready/dirty → clean:** only an operator/systemd-requested graceful stop,
+  observed init exit, Docker-confirmed stopped identity, exit code 0/143 and no
+  Docker OOM/error indication clear the interlock.
+  SIGTERM gets 30 seconds while RAM monitoring continues. Escalation to SIGKILL
+  is a latched failure, not a clean stop. A clean stop retains the stopped
+  container; the next start removes only that exact verified stopped instance.
+  Cancelling the pre-CUDA gate intentionally leaves a latch and requires an
+  explicit reset. A loader that cannot honor SIGTERM also remains latched after
+  forced termination; an operator-requested stop alone does not prove clean exit.
+- **Ready/dirty → latched:** pressure, timeout, model crash, forced teardown or
+  monitoring failure. SIGKILL/power loss may leave `dirty` or `ready` instead;
+  both are equally latched for the next start, including after reboot.
+  `ExecStopPost` independently reconstructs and verifies ownership, kills a
+  surviving owned init via pidfd, confirms stop and retains the latch.
+
+The [systemd watchdog](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#WatchdogSec=)
+only starts after readiness. Before loading, the init therefore waits at least
+31 seconds from supervisor launch for the unit's initial 30-second startup
+grace to expire. Each pre-CUDA Docker operation renews a 20-second lease around
+its 15-second command timeout. The gate also waits for the last such lease to
+expire before releasing CUDA. Only then do five-second renewable deadlines
+supervise the RAM loop during loading; the five-second watchdog covers readiness.
+Neither mechanism retries. Do not increase `TimeoutStartSec` independently of
+the load gate, disable timeout/watchdog settings, or replace the notify unit
+with a process-created readiness mode.
+
+Teardown sends `STOPPING=1` and a bounded 120-second cleanup extension after
+signalling the owned init. On the target systemd, `STOPPING=1` disarms the watchdog
+after readiness; before readiness the explicit extension allows exit confirmation
+and state persistence to finish. Notification failure does not prevent the
+model's stop or persistent latch.
+
+After a failure, first stop the unit and investigate memory, host/driver logs,
+model logs and the saved state. Preserve evidence; **never delete the state file
+to bypass a refusal**. If teardown failed, retry only the scoped recovery action:
+
+```bash
+sudo systemctl stop local-ai-memory.service
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py stop-owned
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py status
+# Only after investigating the cause and confirming adequate headroom:
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py reset
+sudo systemctl reset-failed local-ai-memory.service
+sudo systemctl start local-ai-memory.service
+```
+
+`reset` refuses an active supervisor, a live owned container, ambiguous/mismatched
+identity, corrupt/insecure state, or an unavailable Docker daemon. It clears the
+latch only after verifying the recorded container is stopped or absent and does
+not start anything. If identity or state is damaged, recover the recorded object
+manually after investigation; the supervisor will not guess or target unrelated
+containers. Do not use `docker start`, `docker restart`, the old `launch.sh`,
+or `docker rm` for normal operation: those bypass lifecycle accounting.
+
+**Safety limits:** this is best-effort early termination, not a hard unified-RAM
+reservation or proof against GB10/driver/kernel hangs. Pressure can outrun a
+250ms poll or delay process scheduling/signals; systemd teardown requires a
+working host, Docker metadata and pidfd support. The 112 GiB cgroup cap does not
+account for all driver allocations. The private state directory needs reliable
+local durable storage. Root/Docker administrators and the deployed source/model
+files are trusted; the guard is not a sandbox against a privileged operator.
+Cancellation can arrive after the final pre-load admission check; the supervisor
+then stops the verified init using bounded teardown and RAM monitoring. This is
+not an atomic guarantee that CUDA never begins after a stop signal.
+The single scheduler slot serializes active requests; the 5 GiB pool remains a
+fixed allocation, not an elastic memory limit. Backend native context does not
+configure controller-side context or compaction policy.
+
+Keep the original stopped baseline, image and source snapshot for rollback.
+The final one-slot rollout uses the existing launcher tests, supervised startup
+and one authenticated generation as its bounded acceptance check. This does not
+claim that every long-context workload or failure mode has been certified.
+
+To roll back, choose a preserved, reviewed **supervised** release from the last
+deployment receipt. Its matching pinned image must still be installed (or loaded
+from the reviewed image archive). Keep the current credentials; do not restore a
+retired key from an older snapshot.
+
+```bash
+# Set this to the trusted release path recorded before the deployment.
+PREVIOUS_RELEASE="/home/andre/local-ai/releases/REPLACE_WITH_REVIEWED_COMMIT"
+sudo systemctl stop local-ai-memory.service
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py status
+# Continue only if the state is clean and the recorded container is stopped.
+# Otherwise use the latch-recovery procedure above; do not bypass it.
+sudo test -d "$PREVIOUS_RELEASE" &&
+sudo ln -sfn "$PREVIOUS_RELEASE" /home/andre/local-ai/source &&
+sudo install -o root -g root -m 0644 \
+  "$PREVIOUS_RELEASE/scripts/local-ai-memory.service" \
+  /etc/systemd/system/local-ai-memory.service &&
+sudo systemctl daemon-reload &&
+sudo python3 /home/andre/local-ai/source/scripts/watch-memory.py check-config &&
+sudo systemctl start local-ai-memory.service &&
+sudo systemctl status --no-pager local-ai-memory.service
+```
+
+Confirm authenticated access with the current key after rollback. Do not use
+this procedure to restart an unsupervised legacy launcher or baseline container.
+
+Optional extended diagnostics, on an otherwise idle service:
+
+```bash
+sudo python3 /home/andre/local-ai/source/tools/validate_miaai_update.py \
+  --base http://100.64.255.60:8000 \
+  --allow-tailscale-http \
+  --api-key-file /home/andre/local-ai/secrets/api.key \
+  --mode all --output /home/andre/local-ai/evidence/acceptance.json
+```
+
+This checks reasoning, tool-call JSON, concurrent isolation, growing-prefix
+recall and cache hits, server-tokenized near-full context, and over-limit
+rejection. These checks are useful evidence, not a guarantee for all workloads.
+
+## Historical upstream NVIDIA TP1 recipe (2026-09-10)
+
+The measurements below belong to the upstream madeye deployment, not this
+machine. That profile used thinking off and prefix reuse off; its numbers
+must not be presented as measurements of the authenticated configuration above.
+
+### Historical performance
 
 Measured on 2026-09-10 at 11:21–11:23 UTC, directly against the local vLLM API.
 Temperature 0, thinking off, native MTP3 enabled, DFlash disabled.
@@ -60,27 +348,19 @@ The compatible changes from
 [MiaAI commit d038090](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark/commit/d03809008834124e80223c3482f2ddb59577a48f)
 are applied to this NVIDIA TP1 recipe:
 
-- `DRAFT_VOCAB` defaults to the upstream 47,149-token code vocabulary. The MTP
-  head computes only those rows, then maps logits back to their original token
-  IDs. The target still verifies with its full vocabulary. The data and its
-  upstream license are in [`src/miaai/`](src/miaai/PROVENANCE.md).
-- `MAMBA_SSM_CACHE_DTYPE=bfloat16` halves recurrent-state storage relative to
-  the checkpoint's FP32 setting. Empty or `float32` restores checkpoint precision.
-- `CAPTURE_SIZES=auto` derives every decode width `(MTP+1)*S` for `S=1..SEQS`.
-  At the default MTP3 and six sequences this remains `[4,8,12,16,20,24]`.
+The historical tuning described here used a 47,149-token code vocabulary,
+BF16 recurrent state and automatically derived decode widths
+`(MTP+1)*S` (six-slot graphs `[4,8,12,16,20,24]`). The MTP head selects those
+vocabulary rows while the target still verifies with its full vocabulary;
+the data and upstream license are in [`src/miaai/`](src/miaai/PROVENANCE.md).
 
-The NVIDIA checkpoint, staged disk PLE implementation, 4,096-token chunks, six
-sequences, and V2 runner remain the local recipe. The launcher now reserves host
-memory through `HOST_RESERVE_GIB`; an explicit `GMU` overrides that calculation.
-MiaAI uses a different checkpoint and packed PLE format, so its loader and memory estimates
-are not interchangeable with these. DFlash is not enabled by `serve.sh`.
-
-`DRAFT_VOCAB=65536 MAMBA_SSM_CACHE_DTYPE=float32 bash scripts/serve.sh` restores
-the earlier draft selection and state precision. `DRAFT_VOCAB=0` (or empty)
-uses the full MTP vocabulary. A file path selects a custom token-ID list;
-relative paths resolve against this repository. Invalid selections fail before
-the existing container is stopped. Non-English or non-code traffic may have
-different draft acceptance; upstream's published speedups are not local results.
+These are historical experiments, **not production override instructions**.
+The current launcher pins one slot, graphs `[4,8]`, staged PLE and 5 GiB KV.
+`HOST_RESERVE_GIB`, custom draft/patch selections, alternative precision and
+larger/unbounded KV profiles are refused before CUDA starts. MiaAI uses a
+different checkpoint and packed PLE format; its memory estimates are not
+interchangeable. DFlash remains disabled. Non-English/non-code traffic may
+have different draft acceptance; upstream speedups are not local results.
 
 Before this update, on 2026-09-06 at `GMU=0.80`, the measured 40-prompt median was
 **43.5 tok/s** with **0.26 s** median TTFT and a 0.88 automatic task score. The GPU is locked to its supported 3,003 MHz
@@ -281,16 +561,69 @@ NVMe into staging buffers instead of allocating the entire table on the GPU:
 - On unified memory, "CPU offload" saves nothing (same pool) — only serving
   from disk actually frees memory.
 
-## Setup (as run)
+## Fresh setup for this deployment
+
+Requirements: Linux with pidfds, Python 3.9+ with `pidfd_send_signal`, systemd
+246+ (startup failure mode support), local rootful Docker at
+`/var/run/docker.sock`, NVIDIA runtime, the tested immutable image already
+present, and the pinned official checkpoint. The source/overlays must match
+the tested recipe. A rebuild can produce a different image ID and is **not**
+silently accepted as equivalent.
+
+The repository of record is
+[`andrebrait/qwen38-flash-next-on-dgx-spark`](https://github.com/andrebrait/qwen38-flash-next-on-dgx-spark),
+branch `main`. Install a reviewed source snapshot under
+`/home/andre/local-ai/releases/<commit>` and point `/home/andre/local-ai/source`
+at it while the service is stopped. Keep the previous snapshot for rollback.
+Download and verify the pinned weights with `bash scripts/download-weights.sh`.
+For a fresh host, transfer the reviewed image with `docker image save` /
+`docker image load` to preserve its image ID. `docker build -f Dockerfile.local-ai`
+can rebuild the recipe, but a different resulting image ID requires validation
+and an explicit pin update; do not bypass the launcher's identity check.
+
+Docker live restore must be disabled:
+`sudo docker info --format '{{.LiveRestoreEnabled}}'` must report `false`.
+Provision one cryptographically random, URL-safe key of at least 32 characters:
+`api.key` contains the raw key and `api.env` contains only `VLLM_API_KEY=<same-key>`.
+Transfer the raw key to the controller over authenticated SSH, directly into its
+private key file; do not print it in logs, chat, command arguments or git.
+
+The launcher checks the exact validated `config.json` SHA-256 before creating a
+container, including when `MODEL_HOST` points elsewhere. This pins the architecture
+and quantization configuration; it is not a fresh checksum of every weight shard.
+Weight files must remain the trusted, read-only checkpoint from installation.
+
+With the reviewed source already installed at `/home/andre/local-ai/source` and
+the existing credentials provisioned (same URL-safe 32+-character raw key):
 
 ```bash
-git clone https://github.com/madeye/qwen38-flash-next-on-dgx-spark.git
-cd qwen38-flash-next-on-dgx-spark
-scripts/download-weights.sh  # official NVIDIA checkpoint, ~124 GiB, resumable
-scripts/serve.sh             # default NVIDIA TP1 recipe
-scripts/smoke-test.sh
-scripts/serve-public.sh     # optional legacy loopback vLLM + authenticated gateway
+cd /home/andre/local-ai/source
+# Disable the old watchdog before replacing its unit. Keep the original baseline stopped.
+sudo docker stop --time 30 qwen38-flash
+# Must print false. Do not proceed while the baseline is running.
+sudo docker inspect --format '{{.State.Running}}' qwen38-flash
+sudo systemctl disable --now local-ai-memory.service
+sudo chown root:root /home/andre/local-ai/secrets/api.env /home/andre/local-ai/secrets/api.key
+sudo chmod 0600 /home/andre/local-ai/secrets/api.env /home/andre/local-ai/secrets/api.key
+sudo install -d -o root -g root -m 0700 /var/lib/local-ai-model
+sudo install -d -o root -g root -m 0755 /home/andre/local-ai/cache
+sudo install -o root -g root -m 0644 scripts/local-ai-memory.service /etc/systemd/system/local-ai-memory.service
+sudo systemctl daemon-reload
+sudo systemctl enable local-ai-memory.service
+sudo systemctl start local-ai-memory.service
+sudo systemctl status --no-pager local-ai-memory.service
 ```
+
+Enabling boot startup is safe only with the persistent latch directory retained:
+a clean shutdown permits the next boot; an unclean run refuses to reload.
+No key is put on a command line, in the unit, or in supervisor logs. Rootless
+`DRY_RUN=1 bash scripts/serve.sh` can inspect the proposed non-mutating command
+using private fixture credentials/weights, but is not a startup or safety test.
+Do not copy benchmark recipe environments verbatim: their empty API key is
+intentionally rejected by this production launcher.
+If configuration validation reports `AddressValueError`, check `BIND_HOST`:
+it must be an IPv4 loopback address or an address in `100.64.0.0/10`, not an
+IPv6 address or a hostname. Invalid values fail closed before CUDA starts.
 
 `scripts/serve-legacy.sh` defaults: native 262,144-token context, MTP=3 speculative tokens,
 `--enable-prefix-caching`, deterministic exact QSA top-k, 4 concurrent sequences,
@@ -331,15 +664,16 @@ NVFP4.
 Hybrid trades a little cold-prefill speed for meaningfully faster decode and
 ~7 GiB less resident weight — the right default for an interactive/agentic box.
 
-## Serving it publicly
+## Historical legacy gateway (not used by this deployment)
 
-`scripts/serve.sh` publishes the API on `0.0.0.0` with no authentication of its
-own — fine on a private box, not something to leave on a LAN. `serve-public.sh`
-pins the container's port to loopback instead and fronts it with `gateway.py`:
+The following section documents the older `serve-legacy.sh` and
+`serve-public.sh` profile only. It does **not** describe the authenticated
+Tailscale-only `serve.sh` deployment above. The legacy gateway fronts a
+loopback container with `gateway.py`; do not launch it alongside the current node.
 
 ```bash
 scripts/serve-public.sh              # container + gateway on 0.0.0.0:8080
-MODE=hybrid scripts/serve-public.sh  # every serve.sh variable passes through
+MODE=hybrid scripts/serve-public.sh  # legacy launcher variables only
 GW_PORT=9000 scripts/serve-public.sh
 ```
 
@@ -431,7 +765,10 @@ PLE NVFP4 storage would require a new packed format, a gather/dequantization
 implementation, and model-quality validation. The current loader supports the
 FP8 checkpoint table; changing a quantization flag does not convert it.
 
-## Known limitations (from the recipe, confirmed relevant)
+## Historical recipe limitations
+
+The following limits concern the historical recipes below the deployment
+section. The current production launcher is pinned to 262,144 tokens.
 
 - One big model at a time — this uses most of the 128 GB pool.
 - 1M context is out of reach on one box; 500k with YaRN is the validated ceiling

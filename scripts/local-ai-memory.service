@@ -1,0 +1,30 @@
+[Unit]
+Description=Local AI single-slot model and fail-closed RAM supervisor
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+UMask=0077
+ExecStart=/bin/bash /home/andre/local-ai/source/scripts/serve.sh
+ExecStopPost=/usr/bin/python3 /home/andre/local-ai/source/scripts/watch-memory.py stop-owned
+Restart=no
+TimeoutStartSec=30
+TimeoutStartFailureMode=kill
+TimeoutStopSec=120
+WatchdogSec=5
+WatchdogSignal=SIGKILL
+KillMode=mixed
+StateDirectory=local-ai-model
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/local-ai-model /home/andre/local-ai/cache
+
+[Install]
+WantedBy=multi-user.target

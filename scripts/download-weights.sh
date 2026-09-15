@@ -4,12 +4,13 @@
 #
 #   scripts/download-weights.sh
 #
-# Needs ~130 GB free on the filesystem holding ~/.cache/huggingface.
+# Needs ~130 GB free on the filesystem holding MODEL_HOST.
 set -euo pipefail
 
-MODEL="${MODEL:-nvidia/Qwen3.8-Flash-Next-NVFP4}"
-IMAGE="${IMAGE:-vllm/vllm-openai:nightly-8a728663c1c3eeace834a95f5654fa653cc1998c}"
-MODEL_HOST="${MODEL_HOST:-/var/tmp/models/Qwen3.8-Flash-Next-NVFP4-nvidia}"
+MODEL=nvidia/Qwen3.8-Flash-Next-NVFP4
+REVISION=fc694b54fb0174e0913e6adf86691ef85a4ead47
+IMAGE="${IMAGE:-vllm/vllm-openai@sha256:a551e05307cd2e0092139d84db32af9c97e67d2eeeff072d21e429131d8c23f0}"
+MODEL_HOST="${MODEL_HOST:-/home/andre/local-ai/models/Qwen3.8-Flash-Next-NVFP4}"
 mkdir -p "$MODEL_HOST"
 
 # hf authenticates via HF_TOKEN (or the older HUGGING_FACE_HUB_TOKEN name).
@@ -30,6 +31,6 @@ docker run --rm --name qwen38-dl \
   -e HF_HUB_DISABLE_XET=1 \
   "${TOKEN_ARGS[@]}" \
   -v "$MODEL_HOST:/models" --entrypoint bash "$IMAGE" \
-  -c "hf download '$MODEL' --local-dir /models --max-workers 8"
+  -c "hf download '$MODEL' --revision '$REVISION' --local-dir /models --max-workers 8 && hf cache verify '$MODEL' --revision '$REVISION' --local-dir /models --fail-on-missing-files"
 
-echo ">> done. Verify with: scripts/serve.sh"
+echo ">> Verified pinned checkpoint. Set IMAGE to the reviewed local image before launching scripts/serve.sh."
