@@ -62,6 +62,21 @@ already active. Prefix caching remained off.
 The B12x profile was rejected and removed. Automatic selection remains on
 `FlashInferCutlassNvFp4LinearKernel`.
 
+Prefix caching was tested separately with the same CUTLASS/MTP3 profile,
+1,600-token match blocks, and Mamba `align` mode:
+
+| Probe | Cold | Cached | Reused prefix |
+|---|---:|---:|---:|
+| Repeated 31.5K prompt | 26.65 s TTFT | 1.85 s TTFT | 28,800 tokens (91.4%) |
+| Growing 43.4K conversation | 37.79 s TTFT | 1.48–1.74 s TTFT | 41,600 tokens per turn |
+
+All 12 growing-conversation recalls and 80 concurrent cached requests returned
+the exact expected values. This focused canary cannot rule out the rare silent
+corruption reported upstream for hybrid Qwen + MTP prefix caching
+([vLLM #53912](https://github.com/vllm-project/vllm/issues/53912)), so production
+prefix caching remains disabled pending an upstream fix or a substantially
+larger correctness qualification.
+
 The host was updated through NVIDIA's configured Spark repositories on
 September 21, 2026: driver `580.178.04`, NVIDIA Container Toolkit `1.20.1`,
 DGX Spark OTA metadata `26.09.2`, host CUDA toolkit `13.0.3`, SoC firmware
