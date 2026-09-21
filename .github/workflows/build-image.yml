@@ -6,22 +6,16 @@ on:
     paths:
       - "Dockerfile.local-ai"
       - "src/**"
-      - "scripts/serve.sh"
-      - "scripts/download-weights.sh"
-      - "scripts/watch-memory.py"
-      - "scripts/local-ai-memory.service"
-      - "tools/validate_miaai_update.py"
+      - "config/**"
+      - "scripts/**"
       - "tests/**"
       - ".github/workflows/build-image.yml"
   pull_request:
     paths:
       - "Dockerfile.local-ai"
       - "src/**"
-      - "scripts/serve.sh"
-      - "scripts/download-weights.sh"
-      - "scripts/watch-memory.py"
-      - "scripts/local-ai-memory.service"
-      - "tools/validate_miaai_update.py"
+      - "config/**"
+      - "scripts/**"
       - "tests/**"
       - ".github/workflows/build-image.yml"
   workflow_dispatch:
@@ -44,8 +38,7 @@ jobs:
       - name: Check deployment logic
         run: |
           python3 -m unittest discover -s tests -v
-          python3 -m py_compile tools/validate_miaai_update.py scripts/watch-memory.py
-          bash -n scripts/serve.sh scripts/download-weights.sh
+          bash -n scripts/create-27b.sh scripts/create-swift-27b.sh scripts/local-ai-model scripts/download-weights.sh scripts/smoke-test.sh
 
       - name: Reclaim ephemeral runner disk for CUDA image
         run: |

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1-}" in
+  nvidia) target=qwen38-27b; other=swift-qwen38-27b ;;
+  swift) target=swift-qwen38-27b; other=qwen38-27b ;;
+  status)
+    docker ps -a \
+      --filter name='^/qwen38-27b$' \
+      --filter name='^/swift-qwen38-27b$' \
+      --format '{{.Names}}: {{.Status}}'
+    exit
+    ;;
+  *) echo 'usage: sudo local-ai-model {nvidia|swift|status}' >&2; exit 2 ;;
+esac
+
+if ! target_running="$(docker inspect --format '{{.State.Running}}' "$target" 2>/dev/null)"; then
+  echo "container $target not found; run its create script first" >&2
+  exit 2
+fi
+other_running="$(docker inspect --format '{{.State.Running}}' "$other" 2>/dev/null || true)"
+if [[ "$other_running" == true ]]; then
+  docker stop "$other"
+fi
+if [[ "$target_running" != true ]]; then
+  docker start "$target"
+fi

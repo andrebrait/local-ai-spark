@@ -1,4 +1,4 @@
-# Immutable arm64 vLLM 8a728663 base; override only with reviewed matching sources.
+# Immutable arm64 vLLM 8a728663 base for the Qwen3.8-27B profiles.
 ARG BASE_IMAGE=vllm/vllm-openai@sha256:a551e05307cd2e0092139d84db32af9c97e67d2eeeff072d21e429131d8c23f0
 FROM ${BASE_IMAGE}
 COPY src/patch_prefix_cache.py /tmp/patch_prefix_cache.py
@@ -31,4 +31,4 @@ for route in ("/v1/models", "/invocations", "/tokenize", "/metrics", "/health"):
     assert client.get(route, headers={"Authorization": "Bearer build-test-token"}).status_code == 200
 PY
 LABEL local-ai.managed="true" \
-      local-ai.model="nvidia/Qwen3.8-Flash-Next-NVFP4"
+      local-ai.model-family="Qwen3.8-27B"

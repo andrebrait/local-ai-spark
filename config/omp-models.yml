@@ -1,0 +1,57 @@
+providers:
+  dgx-vllm:
+    baseUrl: http://100.64.255.60:8000/v1
+    api: openai-completions
+    apiKey: '!cat /root/.omp/agent/secrets/dgx-vllm.key'
+    authHeader: true
+    models:
+      - id: qwen3.8-27b
+        name: Qwen3.8-27B (DGX Spark NVFP4)
+        reasoning: true
+        thinking:
+          mode: effort
+          efforts: [low, medium, xhigh]
+          defaultLevel: medium
+          requiresEffort: false
+        input: [text, image]
+        supportsTools: true
+        contextWindow: 262144
+        maxTokens: 262144
+        omitMaxOutputTokens: true
+        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
+        compat:
+          maxTokensField: max_tokens
+          supportsStore: false
+          supportsDeveloperRole: false
+          thinkingFormat: qwen-chat-template
+          qwenTemplateReasoningEffort: true
+          reasoningContentField: reasoning
+          replayReasoningContent: true
+          qwenPreserveThinking: true
+          streamFirstEventTimeoutMs: 0
+          streamIdleTimeoutMs: 1800000
+      - id: swift-qwen3.8-27b
+        name: Swift-Qwen3.8-27B (DGX Spark NVFP4)
+        reasoning: true
+        thinking:
+          mode: effort
+          efforts: [low, medium, xhigh]
+          defaultLevel: medium
+          requiresEffort: false
+        input: [text, image]
+        supportsTools: true
+        contextWindow: 262144
+        maxTokens: 262144
+        omitMaxOutputTokens: true
+        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
+        compat:
+          maxTokensField: max_tokens
+          supportsStore: false
+          supportsDeveloperRole: false
+          thinkingFormat: qwen-chat-template
+          qwenTemplateReasoningEffort: true
+          reasoningContentField: reasoning
+          replayReasoningContent: true
+          qwenPreserveThinking: true
+          streamFirstEventTimeoutMs: 0
+          streamIdleTimeoutMs: 1800000

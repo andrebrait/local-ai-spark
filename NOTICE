@@ -1,9 +1,6 @@
-Qwen3.8 Flash DGX Spark
+Qwen3.8-27B DGX Spark configuration
 Copyright 2026 Max Lv
 
-This repository vendors the single-Spark TP1 patch set from
-Qwen3.8-Flash-Next-NVFP4-DGX-Spark, Copyright 2026 Tony DeAngelo
-(Tech2Wild / 2Wild), under the Apache License, Version 2.0. The vendored
-files in src/full-recipe-patch/ include modified vLLM files; their provenance
-and vLLM Apache-2.0 attribution are retained in
-src/full-recipe-patch/upstream-overlays/PROVENANCE.md.
+The runtime is based on vLLM and NVIDIA CUDA components. Those projects and
+the separately downloaded model checkpoints retain their own copyright and
+license terms.
