@@ -24,25 +24,29 @@ Both containers use the same Spark-specific vLLM profile:
 - Host networking bound only to the Tailscale address `100.64.255.60:8000`
 - Bearer authentication on every HTTP route
 
-The active image is `sha256:b3eb57bba79454feb50c304fb5633af2486eed8e0a658dfe449c659e87be0f5e`, built from the immutable arm64 vLLM base pinned in [`Dockerfile.local-ai`](Dockerfile.local-ai). The base was published September 20, 2026 and reports vLLM `0.29.1rc1.dev422+gd05da62e9`. No ARM64 image was published for the newer `v0.30.0rc2` source release, so this is the newest official prebuilt ARM64 runtime available. The image's authentication change protects `/health`, `/metrics`, `/tokenize`, and compatibility routes in addition to `/v1/*`.
+The active image is `sha256:05eb4719754d1390b2b577a761eb9e53cc8413c17f7863511633e9fba45102c8`, built from the immutable ARM64 vLLM `v0.29.0` base pinned in [`Dockerfile.local-ai`](Dockerfile.local-ai). The image's authentication change protects `/health`, `/metrics`, `/tokenize`, and compatibility routes in addition to `/v1/*`.
 
 Measured on the deployed Spark:
 
 | Profile | FP8 KV tokens | Full 262,144-token sessions |
 |---|---:|---:|
-| NVIDIA | 1,660,733 | 6 |
-| Swift | Not remeasured on the new runtime | 6 expected from identical cache geometry |
+| NVIDIA | 1,726,635 | 6 |
+| Swift | Not remeasured on the release runtime | 6 expected from identical cache geometry |
 
 `max-num-seqs=32` permits more shorter sessions; it does not mean 32 full-context requests fit simultaneously.
 
 The runtime update changed the selected NVFP4 kernel from the old W4A16 CuTeDSL
 path to `FlashInferCutlassNvFp4LinearKernel`. Matched single-request checks:
 
-| Workload | Previous vLLM | Current vLLM | Change |
+| Workload | Previous vLLM | Sept. 20 nightly | v0.29.0 |
 |---|---:|---:|---:|
-| Short-context decode | 16.12 tok/s | 26.72 tok/s | +65.8% |
-| 47.5K-context decode | 18.70 tok/s | 26.54 tok/s | +41.9% |
-| 47.5K time to first token | 180.9 s | 40.5 s | -77.6% |
+| Short-context decode | 16.12 tok/s | 26.72 tok/s | **29.28 tok/s** |
+| 47.5K-context decode | 18.70 tok/s | **26.54 tok/s** | 23.99 tok/s |
+| 47.5K time to first token | 180.9 s | **40.5 s** | 43.3 s |
+
+The released `v0.29.0` runtime was selected for reproducibility and its higher
+short-context throughput. The faster long-context nightly image remains cached
+locally as a rollback option.
 
 The host was updated through NVIDIA's configured Spark repositories on
 September 21, 2026: driver `580.178.04`, NVIDIA Container Toolkit `1.20.1`,

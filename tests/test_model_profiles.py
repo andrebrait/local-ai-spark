@@ -56,7 +56,7 @@ class ModelProfileTest(unittest.TestCase):
         self.assertEqual(args[:3], ["create", "--name", "qwen38-27b"])
         self.assertIn("unless-stopped", args)
         self.assertIn("/home/andre/local-ai/models/Qwen3.8-27B-NVFP4:/models/qwen38-27b:ro", args)
-        self.assertIn("sha256:b3eb57bba79454feb50c304fb5633af2486eed8e0a658dfe449c659e87be0f5e", args)
+        self.assertIn("sha256:05eb4719754d1390b2b577a761eb9e53cc8413c17f7863511633e9fba45102c8", args)
         self.assertEqual(args[args.index("--served-model-name") + 1], "qwen3.8-27b")
         self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "1")
         self.assertEqual(args[args.index("--max-model-len") + 1], "262144")
@@ -74,7 +74,7 @@ class ModelProfileTest(unittest.TestCase):
         args = self.calls()[0]
         self.assertEqual(args[:3], ["create", "--name", "swift-qwen38-27b"])
         self.assertIn("/home/andre/local-ai/models/Swift-Qwen3.8-27B-NVFP4:/models/swift-qwen38-27b:ro", args)
-        self.assertIn("sha256:b3eb57bba79454feb50c304fb5633af2486eed8e0a658dfe449c659e87be0f5e", args)
+        self.assertIn("sha256:05eb4719754d1390b2b577a761eb9e53cc8413c17f7863511633e9fba45102c8", args)
         self.assertEqual(args[args.index("--served-model-name") + 1], "swift-qwen3.8-27b")
         self.assertEqual(args[args.index("--kv-cache-dtype") + 1], "fp8_e4m3")
         self.assertEqual(
