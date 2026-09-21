@@ -29,5 +29,6 @@ exec docker create --name swift-qwen38-27b \
   --mm-encoder-tp-mode data --seed 0 \
   --gpu-memory-utilization 0.75 --max-num-seqs 32 \
   --max-num-batched-tokens 32768 --enable-chunked-prefill \
+  --enable-prefix-caching \
   --no-enable-flashinfer-autotune \
   --speculative-config '{"method":"mtp","num_speculative_tokens":3}'

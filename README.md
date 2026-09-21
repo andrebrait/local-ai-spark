@@ -20,6 +20,7 @@ Both containers use the same Spark-specific vLLM profile:
 - Up to 32 scheduled sequences and 32,768 batched prefill tokens
 - Qwen reasoning parser and `qwen3_coder` tool parser
 - `gpu-memory-utilization=0.75`
+- Prefix caching enabled with 1,600-token match blocks and Mamba `align` mode
 - FlashInfer's transient autotuner disabled; normal FlashInfer kernels remain enabled
 - Host networking bound only to the Tailscale address `100.64.255.60:8000`
 - Bearer authentication on every HTTP route
@@ -30,8 +31,12 @@ Measured on the deployed Spark:
 
 | Profile | FP8 KV tokens | Full 262,144-token sessions |
 |---|---:|---:|
-| NVIDIA | 1,726,635 | 6 |
-| Swift | Not remeasured on the release runtime | 6 expected from identical cache geometry |
+| NVIDIA | 1,698,810 on the current boot | 6 |
+| Swift | Not remeasured after enabling prefix caching | 6 expected from identical cache geometry |
+
+The exact KV token count varies slightly between boots because CUDA-graph
+memory is profiled during startup; use the live startup log for capacity
+planning.
 
 `max-num-seqs=32` permits more shorter sessions; it does not mean 32 full-context requests fit simultaneously.
 
@@ -73,9 +78,11 @@ Prefix caching was tested separately with the same CUTLASS/MTP3 profile,
 All 12 growing-conversation recalls and 80 concurrent cached requests returned
 the exact expected values. This focused canary cannot rule out the rare silent
 corruption reported upstream for hybrid Qwen + MTP prefix caching
-([vLLM #53912](https://github.com/vllm-project/vllm/issues/53912)), so production
-prefix caching remains disabled pending an upstream fix or a substantially
-larger correctness qualification.
+([vLLM #53912](https://github.com/vllm-project/vllm/issues/53912)).
+The deployment owner accepted that residual risk and enabled prefix caching on
+September 21, 2026. Empty output, repeated punctuation/CJK, or unexplained
+content degeneration is a rollback trigger: remove `--enable-prefix-caching`
+from both profiles and recreate the containers.
 
 The host was updated through NVIDIA's configured Spark repositories on
 September 21, 2026: driver `580.178.04`, NVIDIA Container Toolkit `1.20.1`,

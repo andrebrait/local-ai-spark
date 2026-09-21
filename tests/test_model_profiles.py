@@ -66,6 +66,7 @@ class ModelProfileTest(unittest.TestCase):
             json.loads(args[args.index("--speculative-config") + 1]),
             {"method": "mtp", "num_speculative_tokens": 3},
         )
+        self.assertIn("--enable-prefix-caching", args)
         self.assertIn("--no-enable-flashinfer-autotune", args)
 
     def test_swift_profile_uses_its_checkpoint_and_model_id(self):
@@ -81,6 +82,7 @@ class ModelProfileTest(unittest.TestCase):
             json.loads(args[args.index("--speculative-config") + 1]),
             {"method": "mtp", "num_speculative_tokens": 3},
         )
+        self.assertIn("--enable-prefix-caching", args)
 
     def test_selector_stops_the_other_model_before_starting_target(self):
         result = self.run_script(
