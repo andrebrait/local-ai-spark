@@ -48,6 +48,20 @@ The released `v0.29.0` runtime was selected for reproducibility and its higher
 short-context throughput. The faster long-context nightly image remains cached
 locally as a rollback option.
 
+An isolated `flashinfer_b12x` comparison kept FlashInfer attention, MTP3,
+sampling, memory, and context settings unchanged; `CUTE_DSL_ARCH=sm_121a` was
+already active. Prefix caching remained off.
+
+| Workload | CUTLASS | FlashInfer B12x | B12x change |
+|---|---:|---:|---:|
+| Short-context decode | 29.28 tok/s | 28.16 tok/s | -3.8% |
+| 47.5K-context decode | 23.99 tok/s | 22.94 tok/s | -4.4% |
+| 47.5K time to first token | 43.34 s | 44.82 s | +3.4% slower |
+| FP8 KV capacity | 1,726,635 tokens | 1,711,990 tokens | -0.85% |
+
+The B12x profile was rejected and removed. Automatic selection remains on
+`FlashInferCutlassNvFp4LinearKernel`.
+
 The host was updated through NVIDIA's configured Spark repositories on
 September 21, 2026: driver `580.178.04`, NVIDIA Container Toolkit `1.20.1`,
 DGX Spark OTA metadata `26.09.2`, host CUDA toolkit `13.0.3`, SoC firmware
