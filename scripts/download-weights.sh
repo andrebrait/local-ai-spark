@@ -4,7 +4,7 @@
 set -euo pipefail
 
 PROFILE="${1:-all}"
-IMAGE="${IMAGE:-sha256:213e470219da6e21119f0a13a4df35f7e0d1f18ed2fb26e43f68c58965b30dfe}"
+IMAGE="${IMAGE:-sha256:b3eb57bba79454feb50c304fb5633af2486eed8e0a658dfe449c659e87be0f5e}"
 MODEL_ROOT="${MODEL_ROOT:-/home/andre/local-ai/models}"
 
 TOKEN_ARGS=()

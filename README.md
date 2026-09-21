@@ -24,16 +24,30 @@ Both containers use the same Spark-specific vLLM profile:
 - Host networking bound only to the Tailscale address `100.64.255.60:8000`
 - Bearer authentication on every HTTP route
 
-The active image is `sha256:213e470219da6e21119f0a13a4df35f7e0d1f18ed2fb26e43f68c58965b30dfe`, built from the immutable arm64 vLLM base pinned in [`Dockerfile.local-ai`](Dockerfile.local-ai). The image's authentication change protects `/health`, `/metrics`, `/tokenize`, and compatibility routes in addition to `/v1/*`.
+The active image is `sha256:b3eb57bba79454feb50c304fb5633af2486eed8e0a658dfe449c659e87be0f5e`, built from the immutable arm64 vLLM base pinned in [`Dockerfile.local-ai`](Dockerfile.local-ai). The base was published September 20, 2026 and reports vLLM `0.29.1rc1.dev422+gd05da62e9`. No ARM64 image was published for the newer `v0.30.0rc2` source release, so this is the newest official prebuilt ARM64 runtime available. The image's authentication change protects `/health`, `/metrics`, `/tokenize`, and compatibility routes in addition to `/v1/*`.
 
 Measured on the deployed Spark:
 
 | Profile | FP8 KV tokens | Full 262,144-token sessions |
 |---|---:|---:|
-| NVIDIA | 1,637,301 | 6 |
-| Swift | 1,634,372 | 6 |
+| NVIDIA | 1,660,733 | 6 |
+| Swift | Not remeasured on the new runtime | 6 expected from identical cache geometry |
 
 `max-num-seqs=32` permits more shorter sessions; it does not mean 32 full-context requests fit simultaneously.
+
+The runtime update changed the selected NVFP4 kernel from the old W4A16 CuTeDSL
+path to `FlashInferCutlassNvFp4LinearKernel`. Matched single-request checks:
+
+| Workload | Previous vLLM | Current vLLM | Change |
+|---|---:|---:|---:|
+| Short-context decode | 16.12 tok/s | 26.72 tok/s | +65.8% |
+| 47.5K-context decode | 18.70 tok/s | 26.54 tok/s | +41.9% |
+| 47.5K time to first token | 180.9 s | 40.5 s | -77.6% |
+
+The host was updated through NVIDIA's configured Spark repositories on
+September 21, 2026: driver `580.178.04`, NVIDIA Container Toolkit `1.20.1`,
+DGX Spark OTA metadata `26.09.2`, host CUDA toolkit `13.0.3`, SoC firmware
+`2.155.14`, embedded-controller firmware `3.5.11`, and USB-PD firmware `0.5.22`.
 
 ## Install
 

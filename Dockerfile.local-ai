@@ -1,10 +1,6 @@
-# Immutable arm64 vLLM 8a728663 base for the Qwen3.8-27B profiles.
-ARG BASE_IMAGE=vllm/vllm-openai@sha256:a551e05307cd2e0092139d84db32af9c97e67d2eeeff072d21e429131d8c23f0
+# Immutable arm64 vLLM nightly published 2026-09-20.
+ARG BASE_IMAGE=vllm/vllm-openai@sha256:54c653f0a663ac04a92c25aba60f264c6eb203635b1ad1f627eb932ae453609b
 FROM ${BASE_IMAGE}
-COPY src/patch_prefix_cache.py /tmp/patch_prefix_cache.py
-RUN python3 /tmp/patch_prefix_cache.py /usr/local/lib/python3.12/dist-packages \
-    && python3 /tmp/patch_prefix_cache.py /usr/local/lib/python3.12/dist-packages \
-    && rm /tmp/patch_prefix_cache.py
 # vLLM otherwise leaves aliases such as /invocations and diagnostics unguarded.
 RUN python3 - <<'PY'
 from pathlib import Path
@@ -31,4 +27,5 @@ for route in ("/v1/models", "/invocations", "/tokenize", "/metrics", "/health"):
     assert client.get(route, headers={"Authorization": "Bearer build-test-token"}).status_code == 200
 PY
 LABEL local-ai.managed="true" \
-      local-ai.model-family="Qwen3.8-27B"
+      local-ai.model-family="Qwen3.8-27B" \
+      local-ai.vllm-channel="nightly-20260920"

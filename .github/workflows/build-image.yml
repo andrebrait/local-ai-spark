@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - "Dockerfile.local-ai"
-      - "src/**"
       - "config/**"
       - "scripts/**"
       - "tests/**"
@@ -13,7 +12,6 @@ on:
   pull_request:
     paths:
       - "Dockerfile.local-ai"
-      - "src/**"
       - "config/**"
       - "scripts/**"
       - "tests/**"
@@ -46,5 +44,5 @@ jobs:
                       /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache
           df -h /
 
-      - name: Build pinned runtime and verify patch reruns and authentication
+      - name: Build pinned runtime and verify authentication
         run: docker build -f Dockerfile.local-ai -t local-ai-qwen:ci .
