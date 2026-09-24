@@ -23,7 +23,7 @@ with urllib.request.urlopen(request, timeout=10) as response:
 payload = json.dumps({
     "model": model,
     "messages": [{"role": "user", "content": "Reply with exactly: READY"}],
-    "max_tokens": 64,
+    "max_tokens": 256,
     "temperature": 0,
 }).encode()
 request = urllib.request.Request(

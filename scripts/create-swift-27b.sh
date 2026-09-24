@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="${IMAGE:-sha256:05eb4719754d1390b2b577a761eb9e53cc8413c17f7863511633e9fba45102c8}"
+IMAGE="${IMAGE:-sha256:3d2392b19f43e80aa05c602cc978b2400715fbb77908de3d2f14bd1ee4ce796c}"
 MODEL_HOST="${MODEL_HOST:-/home/andre/local-ai/models/Swift-Qwen3.8-27B-NVFP4}"
 CACHE_HOST="${CACHE_HOST:-/home/andre/local-ai/cache}"
 API_ENV_FILE="${API_ENV_FILE:-/home/andre/local-ai/secrets/api.env}"

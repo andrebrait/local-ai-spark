@@ -25,7 +25,7 @@ Both containers use the same Spark-specific vLLM profile:
 - Host networking bound only to the Tailscale address `100.64.255.60:8000`
 - Bearer authentication on every HTTP route
 
-The active image is `sha256:05eb4719754d1390b2b577a761eb9e53cc8413c17f7863511633e9fba45102c8`, built from the immutable ARM64 vLLM `v0.29.0` base pinned in [`Dockerfile.local-ai`](Dockerfile.local-ai). The image's authentication change protects `/health`, `/metrics`, `/tokenize`, and compatibility routes in addition to `/v1/*`.
+The active image is `sha256:3d2392b19f43e80aa05c602cc978b2400715fbb77908de3d2f14bd1ee4ce796c`, built from the immutable ARM64 vLLM `v0.30.0` base pinned in [`Dockerfile.local-ai`](Dockerfile.local-ai). The image's authentication change protects `/health`, `/metrics`, `/tokenize`, and compatibility routes in addition to `/v1/*`.
 
 Measured on the deployed Spark:
 
@@ -49,9 +49,10 @@ path to `FlashInferCutlassNvFp4LinearKernel`. Matched single-request checks:
 | 47.5K-context decode | 18.70 tok/s | **26.54 tok/s** | 23.99 tok/s |
 | 47.5K time to first token | 180.9 s | **40.5 s** | 43.3 s |
 
-The released `v0.29.0` runtime was selected for reproducibility and its higher
-short-context throughput. The faster long-context nightly image remains cached
-locally as a rollback option.
+The released `v0.30.0` runtime replaced `v0.29.0` after a same-host,
+fixed-workload Swift comparison: 21.9 versus 20.4 completion tok/s (+7.4%)
+for 15 requests capped at 128 output tokens after one excluded warm-up.
+Stopped `v0.29.0` containers remain available for rollback.
 
 An isolated `flashinfer_b12x` comparison kept FlashInfer attention, MTP3,
 sampling, memory, and context settings unchanged; `CUTE_DSL_ARCH=sm_121a` was
