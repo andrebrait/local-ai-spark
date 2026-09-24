@@ -31,8 +31,8 @@ Measured on the deployed Spark:
 
 | Profile | FP8 KV tokens | Full 262,144-token sessions |
 |---|---:|---:|
-| NVIDIA | 1,698,810 on the current boot | 6 |
-| Swift | Not remeasured after enabling prefix caching | 6 expected from identical cache geometry |
+| NVIDIA | 1,672,449 on the current boot | 6 |
+| Swift | 1,660,733 on the current boot | 6 |
 
 The exact KV token count varies slightly between boots because CUDA-graph
 memory is profiled during startup; use the live startup log for capacity
